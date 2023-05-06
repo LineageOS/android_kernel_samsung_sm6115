@@ -426,9 +426,9 @@ static ssize_t afc_disable_show(struct device *dev,
 	pr_info("%s\n", __func__);
 
 	if (gafc->afc_disable)
-		return sprintf(buf, "AFC is disabled\n");
+		return sprintf(buf, "1\n");
 	else
-		return sprintf(buf, "AFC is enabled\n");
+		return sprintf(buf, "0\n");
 }
 
 static ssize_t afc_disable_store(struct device *dev,
@@ -494,7 +494,8 @@ static int afc_sysfs_init(void)
 	pr_info("%s\n", __func__);
 
 	/* sysfs */
-	afc = sec_device_create(NULL, "afc");
+	afc = sec_device_create(NULL, "switch");
+
 	if (IS_ERR(afc)) {
 		pr_err("%s Failed to create device(afc)!\n", __func__);
 		ret = -ENODEV;
