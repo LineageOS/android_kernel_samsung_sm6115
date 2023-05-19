@@ -41,5 +41,7 @@
 #define CONFIG_SND_SOC_BENGAL 1
 #define CONFIG_SND_EVENT 1
 #define CONFIG_TDM_DISABLE 1
-#define CONFIG_MI2S_DISABLE 1
+//Bug702114, qiuyonghui.wt, 20211119, modify for audio bring up
+//#define CONFIG_MI2S_DISABLE 1
 #define CONFIG_AUXPCM_DISABLE 1
+#define CONFIG_SND_SOC_FS18XX 1

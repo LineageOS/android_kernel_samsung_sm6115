@@ -63,8 +63,11 @@
 #define CODEC_EXT_CLK_RATE          9600000
 #define ADSP_STATE_READY_TIMEOUT_MS 3000
 #define DEV_NAME_STR_LEN            32
-#define WCD_MBHC_HS_V_MAX           1600
+//Bug702114, qiuyonghui.wt, 20211121, modify for audio bring up
+#define WCD_MBHC_HS_V_MAX           1700
 #define ROULEUR_MBHC_HS_V_MAX       1700
+#define MAX_IMPED 60000
+
 
 #define TDM_CHANNEL_MAX		8
 #define DEV_NAME_STR_LEN	32
@@ -572,14 +575,15 @@ static struct wcd_mbhc_config wcd_mbhc_cfg = {
 	.swap_gnd_mic = NULL,
 	.hs_ext_micbias = true,
 	.key_code[0] = KEY_MEDIA,
-	.key_code[1] = KEY_VOICECOMMAND,
-	.key_code[2] = KEY_VOLUMEUP,
-	.key_code[3] = KEY_VOLUMEDOWN,
+	.key_code[1] = KEY_VOLUMEUP,
+	.key_code[2] = KEY_VOLUMEDOWN,
+	.key_code[3] = 0,
 	.key_code[4] = 0,
 	.key_code[5] = 0,
 	.key_code[6] = 0,
 	.key_code[7] = 0,
-	.linein_th = 5000,
+    //Bug702114, qiuyonghui.wt, 20211121, modify for audio bringup
+	.linein_th = MAX_IMPED,
 	.moisture_en = false,
 	.mbhc_micbias = MIC_BIAS_2,
 	.anc_micbias = MIC_BIAS_2,
@@ -4390,8 +4394,8 @@ static void *def_wcd_mbhc_cal(void)
 		(sizeof(btn_cfg->_v_btn_low[0]) * btn_cfg->num_btn);
 
 	btn_high[0] = 75;
-	btn_high[1] = 150;
-	btn_high[2] = 237;
+	btn_high[1] = 255;
+	btn_high[2] = 450;
 	btn_high[3] = 500;
 	btn_high[4] = 500;
 	btn_high[5] = 500;
@@ -5058,6 +5062,20 @@ static struct snd_soc_dai_link msm_common_misc_fe_dai_links[] = {
 		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
 		.ops = &msm_cdc_dma_be_ops,
 	},
+	{/* hw:x,39 */
+		.name = "TX4_CDC_DMA Hostless",
+		.stream_name = "TX4_CDC_DMA Hostless",
+		.cpu_dai_name = "TX4_CDC_DMA_HOSTLESS",
+		.platform_name = "msm-pcm-hostless",
+		.dynamic = 1,
+		.dpcm_capture = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			    SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+	},
 };
 
 static struct snd_soc_dai_link msm_common_be_dai_links[] = {
@@ -5382,8 +5400,9 @@ static struct snd_soc_dai_link msm_mi2s_be_dai_links[] = {
 		.stream_name = "Primary MI2S Playback",
 		.cpu_dai_name = "msm-dai-q6-mi2s.0",
 		.platform_name = "msm-pcm-routing",
-		.codec_name = "msm-stub-codec.1",
-		.codec_dai_name = "msm-stub-rx",
+		//Bug702114, qiuyonghui.wt, 20211119, modify for audio bringup
+		.codec_dai_name = "fs18xx-aif",
+		.codec_name = "fs18xx",
 		.no_pcm = 1,
 		.dpcm_playback = 1,
 		.id = MSM_BACKEND_DAI_PRI_MI2S_RX,
