@@ -144,25 +144,8 @@ dtb-$(CONFIG_ARCH_LAGOON) += \
 endif
 
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
-        dtbo-$(CONFIG_ARCH_BENGAL) += \
-                bengal-rumi-overlay.dtbo \
-                bengal-qrd-overlay.dtbo \
-                bengal-idp-overlay.dtbo \
-                bengal-idp-nopmi-overlay.dtbo \
-                bengal-idp-usbc-overlay.dtbo \
-                bengalp-idp-overlay.dtbo \
-                bengal-idp-1gb-overlay.dtbo \
-                bengal-idp-2gb-overlay.dtbo \
-                bengal-idp-usbc-1gb-overlay.dtbo \
-                bengal-idp-usbc-2gb-overlay.dtbo \
-                bengal-iot-idp-overlay.dtbo \
-                bengalp-iot-idp-overlay.dtbo \
-                bengal-iot-idp-2gb-overlay.dtbo \
-                bengal-iot-idp-usbc-2gb-overlay.dtbo \
-                bengal-iot-idp-usbc-overlay.dtbo \
-                bengalp-iot-idp-2gb-overlay.dtbo \
-                bengalp-iot-idp-usbc-2gb-overlay.dtbo \
-                bengalp-iot-idp-usbc-overlay.dtbo
+        dtbo-$(CONFIG_GTA4L_DTB) += \
+		P85946-qrd-overlay.dtbo
 
 bengal-rumi-overlay.dtbo-base := bengal.dtb
 bengal-qrd-overlay.dtbo-base := bengal.dtb
@@ -182,6 +165,7 @@ bengal-iot-idp-usbc-overlay.dtbo-base := bengal-iot.dtb
 bengalp-iot-idp-2gb-overlay.dtbo-base := bengalp-iot-2gb.dtb
 bengalp-iot-idp-usbc-2gb-overlay.dtbo-base := bengalp-iot-2gb.dtb
 bengalp-iot-idp-usbc-overlay.dtbo-base := bengalp-iot.dtb
+P85946-qrd-overlay.dtbo-base := bengal.dtb
 else
 dtb-$(CONFIG_ARCH_BENGAL) += bengal-rumi.dtb \
                 bengal-qrd.dtb \

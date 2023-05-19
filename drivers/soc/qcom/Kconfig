@@ -3,6 +3,13 @@
 # QCOM Soc drivers
 #
 menu "Qualcomm SoC drivers"
+config GTA4L_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Samsung SM-T505 DTB"
+	help
+		Include Samsung SM-T505 DTB(O)
+
 config QCOM_COMMAND_DB
 	tristate "Qualcomm Command DB"
 	depends on ARCH_QCOM || COMPILE_TEST
