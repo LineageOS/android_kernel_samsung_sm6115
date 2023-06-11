@@ -9,5 +9,7 @@ ccflags-y += -I$(srctree)/techpack/camera-bengal/drivers/cam_sensor_module/cam_s
 ccflags-y += -I$(srctree)/techpack/camera-bengal/drivers/cam_sensor_module/cam_sensor_utils
 ccflags-y += -I$(srctree)/techpack/camera-bengal/drivers/cam_smmu/
 ccflags-y += -I$(srctree)/techpack/camera-bengal/drivers/cam_utils
+# bug535065,liuxingyu.wt,modity,2020/05/05,bring up s5k4h7 dongci
+ccflags-y += -I$(srctree)/techpack/camera-bengal/drivers/cam_sensor_module/cam_eeprom
 
 obj-$(CONFIG_SPECTRA_CAMERA) += cam_sensor_dev.o cam_sensor_core.o cam_sensor_soc.o

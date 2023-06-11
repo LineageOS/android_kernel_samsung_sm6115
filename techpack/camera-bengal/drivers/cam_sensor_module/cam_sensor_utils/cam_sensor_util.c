@@ -1102,9 +1102,17 @@ int cam_sensor_util_request_gpio_table(
 
 	if (gpio_en) {
 		for (i = 0; i < size; i++) {
+			//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+			if((!strcmp(gpio_tbl[i].label,"CAM_VANA0") || !strcmp(gpio_tbl[i].label,"CAM_VANA2")
+				|| !strcmp(gpio_tbl[i].label,"CAM_VIO0") ||!strcmp(gpio_tbl[i].label,"CAM_VIO2")
+				|| !strcmp(gpio_tbl[i].label,"CAM_VDIG0") || !strcmp(gpio_tbl[i].label,"CAM_VDIG2")) && ((back_cam == 1) || (front_cam == 1))) {
+				CAM_INFO(CAM_SENSOR, "No need request power gpio");
+				continue;
+			}
 			rc = cam_res_mgr_gpio_request(soc_info->dev,
 					gpio_tbl[i].gpio,
 					gpio_tbl[i].flags, gpio_tbl[i].label);
+			//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
 			if (rc) {
 				/*
 				 * After GPIO request fails, contine to
@@ -1688,6 +1696,86 @@ int cam_sensor_util_init_gpio_pin_tbl(
 		rc = 0;
 	}
 
+    //+bug594012, liuxingyu.wt, ADD, 20201020, for modified camera sensor hw  gpio info;
+    rc = of_property_read_u32(of_node, "gpio-vana", &val);
+	if (rc != -EINVAL) {
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR,
+				"read gpio-custom1 failed rc %d", rc);
+			goto free_gpio_info;
+		} else if (val >= gpio_array_size) {
+			CAM_ERR(CAM_SENSOR, "gpio-vana invalid %d", val);
+			rc = -EINVAL;
+			goto free_gpio_info;
+		}
+		gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO_VANA] =
+			gconf->cam_gpio_common_tbl[val].gpio;
+		gpio_num_info->valid[SENSOR_CUSTOM_GPIO_VANA] = 1;
+
+		CAM_DBG(CAM_SENSOR, "gpio-vana %d",
+			gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO_VANA]);
+	}
+
+    rc = of_property_read_u32(of_node, "gpio-vdig", &val);
+	if (rc != -EINVAL) {
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR,
+				"read gpio-vdig failed rc %d", rc);
+			goto free_gpio_info;
+		} else if (val >= gpio_array_size) {
+			CAM_ERR(CAM_SENSOR, "gpio-vdig invalid %d", val);
+			rc = -EINVAL;
+			goto free_gpio_info;
+		}
+		gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO_VDIG] =
+			gconf->cam_gpio_common_tbl[val].gpio;
+		gpio_num_info->valid[SENSOR_CUSTOM_GPIO_VDIG] = 1;
+
+		CAM_DBG(CAM_SENSOR, "gpio-vdig %d",
+			gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO_VDIG]);
+	}
+
+    rc = of_property_read_u32(of_node, "gpio-vio", &val);
+	if (rc != -EINVAL) {
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR,
+				"read gpio-vio failed rc %d", rc);
+			goto free_gpio_info;
+		} else if (val >= gpio_array_size) {
+			CAM_ERR(CAM_SENSOR, "gpio-vio invalid %d", val);
+			rc = -EINVAL;
+			goto free_gpio_info;
+		}
+		gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO_VIO] =
+			gconf->cam_gpio_common_tbl[val].gpio;
+		gpio_num_info->valid[SENSOR_CUSTOM_GPIO_VIO] = 1;
+
+		CAM_DBG(CAM_SENSOR, "gpio-vio %d",
+			gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO_VIO]);
+	}
+
+    rc = of_property_read_u32(of_node, "gpio-vaf", &val);
+	if (rc != -EINVAL) {
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR,
+				"read gpio-vaf failed rc %d", rc);
+			goto free_gpio_info;
+		} else if (val >= gpio_array_size) {
+			CAM_ERR(CAM_SENSOR, "gpio-vaf  invalid %d", val);
+			rc = -EINVAL;
+			goto free_gpio_info;
+		}
+		gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO_VAF] =
+			gconf->cam_gpio_common_tbl[val].gpio;
+		gpio_num_info->valid[SENSOR_CUSTOM_GPIO_VAF] = 1;
+
+		CAM_DBG(CAM_SENSOR, "gpio-vaf %d",
+			gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO_VAF]);
+	} else {
+            rc = 0; //bug535065, Chris.wt, MODIFY, 20200305, for modified camera sensor id2 hw  gpio info
+        }
+    //-bug594012, liuxingyu.wt, ADD, 20201020, for modified camera sensor hw  gpio info;
+
 	return rc;
 
 free_gpio_info:
@@ -1889,8 +1977,15 @@ int cam_sensor_core_power_up(struct cam_sensor_power_ctrl_t *ctrl,
 			return -EINVAL;
 		}
 
-		CAM_DBG(CAM_SENSOR, "seq_type %d", power_setting->seq_type);
-
+		//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+		CAM_INFO(CAM_SENSOR, "seq_type %d  back_cam %d  front_cam %d",  power_setting->seq_type, back_cam, front_cam);
+		if(((power_setting->seq_type == SENSOR_CUSTOM_GPIO_VIO)
+			|| (power_setting->seq_type == SENSOR_CUSTOM_GPIO_VANA)
+			|| (power_setting->seq_type == SENSOR_CUSTOM_GPIO_VDIG)) && (((back_cam == 1) || (front_cam == 1)))){
+			CAM_INFO(CAM_SENSOR, " %d the electricity is on",power_setting->seq_type);
+			continue;
+		}
+		//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
 		switch (power_setting->seq_type) {
 		case SENSOR_MCLK:
 			if (power_setting->seq_val >= soc_info->num_clk) {
@@ -1960,6 +2055,12 @@ int cam_sensor_core_power_up(struct cam_sensor_power_ctrl_t *ctrl,
 		case SENSOR_STANDBY:
 		case SENSOR_CUSTOM_GPIO1:
 		case SENSOR_CUSTOM_GPIO2:
+		//+bug594012, liuxingyu.wt, ADD, 20201020, for modified camera sensor hw  gpio info;
+		case SENSOR_CUSTOM_GPIO_VANA:
+		case SENSOR_CUSTOM_GPIO_VDIG:
+		case SENSOR_CUSTOM_GPIO_VIO:
+		case SENSOR_CUSTOM_GPIO_VAF:
+		//-bug594012, liuxingyu.wt, ADD, 20201020, for modified camera sensor hw  gpio info;
 			if (no_gpio) {
 				CAM_ERR(CAM_SENSOR, "request gpio failed");
 				goto power_up_failed;
@@ -2237,7 +2338,16 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 		}
 
 		ps = NULL;
-		CAM_DBG(CAM_SENSOR, "seq_type %d",  pd->seq_type);
+		//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+		CAM_INFO(CAM_SENSOR, "seq_type %d  back_cam %d  front_cam %d",  pd->seq_type, back_cam, front_cam);
+		if(((pd->seq_type == SENSOR_CUSTOM_GPIO_VIO)
+			|| (pd->seq_type == SENSOR_CUSTOM_GPIO_VANA)
+			|| (pd->seq_type == SENSOR_CUSTOM_GPIO_VDIG)) && (((back_cam == 1) && (front_cam == 1)))){
+			CAM_INFO(CAM_SENSOR, " %d the electricity is on",pd->seq_type);
+			continue;
+		}
+		//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+
 		switch (pd->seq_type) {
 		case SENSOR_MCLK:
 			for (i = soc_info->num_clk - 1; i >= 0; i--) {
@@ -2256,6 +2366,12 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 		case SENSOR_STANDBY:
 		case SENSOR_CUSTOM_GPIO1:
 		case SENSOR_CUSTOM_GPIO2:
+		//+bug594012, liuxingyu.wt, ADD, 20201020, for modified camera sensor hw  gpio info;
+		case SENSOR_CUSTOM_GPIO_VANA:
+		case SENSOR_CUSTOM_GPIO_VDIG:
+		case SENSOR_CUSTOM_GPIO_VIO:
+		case SENSOR_CUSTOM_GPIO_VAF:
+		//-bug594012, liuxingyu.wt, ADD, 20201020, for modified camera sensor hw  gpio info;
 
 			if (!gpio_num_info->valid[pd->seq_type])
 				continue;
@@ -2336,17 +2452,21 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 			usleep_range(pd->delay * 1000,
 				(pd->delay * 1000) + 1000);
 	}
+	//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+	if(((back_cam == 1) && (front_cam == 1))) {
+		CAM_INFO(CAM_SENSOR, "donot need suspend gpio");
+	} else {
+		if (ctrl->cam_pinctrl_status) {
+			ret = pinctrl_select_state(
+					ctrl->pinctrl_info.pinctrl,
+					ctrl->pinctrl_info.gpio_state_suspend);
+			if (ret)
+				CAM_ERR(CAM_SENSOR, "cannot set pin to suspend state");
 
-	if (ctrl->cam_pinctrl_status) {
-		ret = pinctrl_select_state(
-				ctrl->pinctrl_info.pinctrl,
-				ctrl->pinctrl_info.gpio_state_suspend);
-		if (ret)
-			CAM_ERR(CAM_SENSOR, "cannot set pin to suspend state");
-
-		devm_pinctrl_put(ctrl->pinctrl_info.pinctrl);
+			devm_pinctrl_put(ctrl->pinctrl_info.pinctrl);
+		}
 	}
-
+	//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
 	if (soc_info->use_shared_clk)
 		cam_res_mgr_shared_clk_config(false);
 

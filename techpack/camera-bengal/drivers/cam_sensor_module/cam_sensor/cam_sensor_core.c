@@ -12,6 +12,19 @@
 #include "cam_common_util.h"
 #include "cam_packet_util.h"
 
+#include <linux/hardware_info.h>  //bug594012 liuxingyu.wt, add, 20201021 ,add camera info interface for factory app
+
+//+bug535065,liuxingyu.wt,ADD,2020/05/05,bring up s5k4h7 dongci
+#include "eepromWriteInitParamsBeforeReadCalData/eepromWriteInitParmsBeforeReadCalData.h"
+//-bug535065,liuxingyu.wt,ADD,2020/05/05,bring up s5k4h7 dongci
+
+//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+bool back_cam = 0;
+bool front_cam = 0;
+//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+//+bug535065,qinduilin.wt,ADD,2021/01/18,add union image gc5035 bring up
+static int read_gc5035_mouduleid(struct cam_sensor_ctrl_t *e_ctrl, uint8_t *readinfo);
+//-bug535065,qinduilin.wt,ADD,2021/01/18,add union image gc5035 bring up
 
 static void cam_sensor_update_req_mgr(
 	struct cam_sensor_ctrl_t *s_ctrl,
@@ -587,6 +600,13 @@ void cam_sensor_shutdown(struct cam_sensor_ctrl_t *s_ctrl)
 	if (s_ctrl->sensor_state != CAM_SENSOR_INIT)
 		cam_sensor_power_down(s_ctrl);
 
+	//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+	if((s_ctrl->sensordata->slave_info.sensor_id == 0x487B) || (s_ctrl->sensordata->slave_info.sensor_id == 0x487C) || (s_ctrl->sensordata->slave_info.sensor_id == 0x4608) || (s_ctrl->sensordata->slave_info.sensor_id == 0x8044) || (s_ctrl->sensordata->slave_info.sensor_id == 0x0802))
+		back_cam = 0;
+	else if((s_ctrl->sensordata->slave_info.sensor_id == 0x0556) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5035) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5036) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5037))
+		front_cam = 0;
+	//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+
 	if (s_ctrl->bridge_intf.device_hdl != -1) {
 		rc = cam_destroy_device_hdl(s_ctrl->bridge_intf.device_hdl);
 		if (rc < 0)
@@ -610,10 +630,165 @@ void cam_sensor_shutdown(struct cam_sensor_ctrl_t *s_ctrl)
 	s_ctrl->sensor_state = CAM_SENSOR_INIT;
 }
 
+//+bug535065,liuxingyu.wt,ADD,2020/05/05,bring up s5k4h7 dongci
+#define N19_S5K4H7YX_BACK_HElLITAI_PAGE_BLOCK_SIZE 64
+#define MAX_STREAMON_CHECKTIMES 100
+#define MAX_RAED_STATUS_CHECKTIMES 10
+struct eeprom_memory_map_init_write_params n19_s5k4h7yx_back_eeprom  ={
+    .slave_addr = 0x5A,
+          .mem_settings =
+          {
+            {0x0100, CAMERA_SENSOR_I2C_TYPE_WORD,0x0100, CAMERA_SENSOR_I2C_TYPE_WORD, 0x32},//STREAM ON
+            {0x0A02, CAMERA_SENSOR_I2C_TYPE_WORD,0x0000, CAMERA_SENSOR_I2C_TYPE_WORD, 0x00},//set page
+            {0x3B41, CAMERA_SENSOR_I2C_TYPE_WORD,0x0001, CAMERA_SENSOR_I2C_TYPE_WORD, 0x00},
+            {0x3B42, CAMERA_SENSOR_I2C_TYPE_WORD,0x0003, CAMERA_SENSOR_I2C_TYPE_WORD, 0x00},
+            {0x3B40, CAMERA_SENSOR_I2C_TYPE_WORD,0x0001, CAMERA_SENSOR_I2C_TYPE_WORD, 0x00},
+            {0x0A00, CAMERA_SENSOR_I2C_TYPE_WORD,0x0100, CAMERA_SENSOR_I2C_TYPE_WORD, 0x01},//set Read mode
+          },
+          //19MHZ use
+          //.memory_map_size = 15,
+          .memory_map_size = 6,
+};
+struct eeprom_memory_map_init_write_params n19_s5k4h7yx_back_eeprom_after_read  ={
+    .slave_addr = 0x5A,
+          .mem_settings =
+          {
+            {0x0a00, CAMERA_SENSOR_I2C_TYPE_WORD,0x0400, CAMERA_SENSOR_I2C_TYPE_BYTE, 20 },
+            {0x0a00, CAMERA_SENSOR_I2C_TYPE_WORD,0x0000, CAMERA_SENSOR_I2C_TYPE_BYTE, 0 },
+          },
+          .memory_map_size = 2,
+};
+static int read_n19_s5k4h7yx_module_id(struct cam_sensor_ctrl_t *e_ctrl, char *module_id)
+{
+	int                                rc = 0;
+	struct cam_sensor_i2c_reg_setting  i2c_reg_settings = {0};
+	struct cam_sensor_i2c_reg_array    i2c_reg_array = {0};
+	uint8_t memptr[N19_S5K4H7YX_BACK_HElLITAI_PAGE_BLOCK_SIZE] = {0};
+	struct eeprom_memory_map_init_write_params *pWriteParams_back, *pWriteParams_after= NULL;
+	uint32_t count_write;
+	//bug535065,zhouyikuan.wt,ADD,2020/03/27,add s5k4h7yx lsc otp data sometime can't read
+	uint32_t read_complete_result,streamon_complete_result = 0xff;
+	uint32_t read_status,k = 0;
+
+	//step1 init write params
+	pWriteParams_back = &n19_s5k4h7yx_back_eeprom;
+	if(pWriteParams_back == NULL || pWriteParams_back->memory_map_size == 0) {
+		CAM_ERR(CAM_EEPROM, "invalid init write params , ");
+	} else {
+		CAM_DBG(CAM_EEPROM, "write init params , size : %d	", pWriteParams_back->memory_map_size);
+		for(count_write=0;count_write< pWriteParams_back->memory_map_size; count_write++)
+		{
+			i2c_reg_settings.addr_type = pWriteParams_back->mem_settings[count_write].addr_type;
+			i2c_reg_settings.data_type = pWriteParams_back->mem_settings[count_write].data_type;
+			i2c_reg_settings.size = 1;
+			i2c_reg_array.reg_addr = pWriteParams_back->mem_settings[count_write].reg_addr;
+			if(1 == count_write) {//set page
+				i2c_reg_array.reg_data = (21<<8)&0xff00;//set page 21
+			}else {
+				i2c_reg_array.reg_data = pWriteParams_back->mem_settings[count_write].reg_data;
+			}
+			i2c_reg_array.delay = pWriteParams_back->mem_settings[count_write].delay;
+			i2c_reg_settings.reg_setting = &i2c_reg_array;
+			rc = camera_io_dev_write(&e_ctrl->io_master_info, &i2c_reg_settings);
+			if (rc) {
+				CAM_ERR(CAM_EEPROM, "write init params failed rc %d", rc);
+				return rc;
+			}
+			//+bug535065,zhouyikuan.wt,ADD,2020/03/27,add s5k4h7yx lsc otp data sometime can't read
+			if(0 == count_write){
+				for(k = 0;k < MAX_STREAMON_CHECKTIMES;k++) { //check stream on status,test 100 times
+					rc = camera_io_dev_read(&e_ctrl->io_master_info,
+							0x0005, &streamon_complete_result,
+							CAMERA_SENSOR_I2C_TYPE_WORD,
+							CAMERA_SENSOR_I2C_TYPE_BYTE);
+					if(0xff == (uint8_t)streamon_complete_result){
+						if(99 == k)
+							CAM_ERR(CAM_EEPROM, "stream on error,excee MAX_STREAMON_CHECKTIMES");
+						else
+							CAM_DBG(CAM_EEPROM, "stream on no complete,k=%d",k);
+					}else{
+						CAM_DBG(CAM_EEPROM, "stream on is complete");
+						break;
+					}
+				}
+			}
+			//-bug535065,zhouyikuan.wt,ADD,2020/03/27,add s5k4h7yx lsc otp data sometime can't read
+		}
+
+		//step2: read ready status
+		//+bug535065,zhouyikuan.wt,ADD,2020/03/27,add s5k4h7yx lsc otp data sometime can't read
+		for(k = 0;k < MAX_RAED_STATUS_CHECKTIMES;k++){//test 10 times
+			rc = camera_io_dev_read(&e_ctrl->io_master_info,
+					0x0A01, &read_complete_result,
+					CAMERA_SENSOR_I2C_TYPE_WORD,
+					CAMERA_SENSOR_I2C_TYPE_BYTE);
+			if (rc) {
+				CAM_ERR(CAM_EEPROM, "read failed rc %d", rc);
+				return rc;
+			}
+			CAM_DBG(CAM_EEPROM,"complete_result=%x",read_complete_result);
+			if(0x1 == (((uint8_t)read_complete_result)&0x01)) {//read if ready
+				//-bug535065,zhouyikuan.wt,ADD,2020/03/27,add s5k4h7yx lsc otp data sometime can't read
+				read_status = 1;
+				CAM_ERR(CAM_EEPROM,"read READY!!");
+				break;
+			}else{
+				read_status = -1;
+				CAM_ERR(CAM_EEPROM,"read no ready!!,k=%d",k);
+			}
+			if(k == 9)
+				return  -1;
+		}
+
+		//step3: start read sensor otp data
+		if(1 == read_status){//start read
+			rc = camera_io_dev_read_seq(&e_ctrl->io_master_info,
+					0xa04, memptr, 2, 1, N19_S5K4H7YX_BACK_HElLITAI_PAGE_BLOCK_SIZE);
+			if(0x55 == memptr[0])  //group 1
+				*module_id = memptr[1];
+			else if(0x55 == memptr[10])  //group 2
+				*module_id = memptr[11];
+			else
+				*module_id = 0;
+			if (rc) {
+				CAM_ERR(CAM_EEPROM, "read failed rc %d",rc);
+				return rc;
+			}
+		}
+
+		//step4: uinit read mode
+		pWriteParams_after = &n19_s5k4h7yx_back_eeprom_after_read;
+		if(pWriteParams_after == NULL || pWriteParams_after->memory_map_size == 0) {
+			CAM_ERR(CAM_EEPROM, "invalid uninit write params , ");
+		} else {
+			CAM_DBG(CAM_EEPROM, "write uninit params , size : %d  ", pWriteParams_after->memory_map_size);
+			for(count_write=0;count_write< pWriteParams_after->memory_map_size; count_write++)
+			{
+				i2c_reg_settings.addr_type = pWriteParams_after->mem_settings[count_write].addr_type;
+				i2c_reg_settings.data_type = pWriteParams_after->mem_settings[count_write].data_type;
+				i2c_reg_settings.size = 1;
+				i2c_reg_array.reg_addr = pWriteParams_after->mem_settings[count_write].reg_addr;
+				i2c_reg_array.reg_data = pWriteParams_after->mem_settings[count_write].reg_data;
+				i2c_reg_array.delay = pWriteParams_after->mem_settings[count_write].delay;
+				i2c_reg_settings.reg_setting = &i2c_reg_array;
+				CAM_ERR(CAM_EEPROM, " after i2c_reg_array.reg_data= %d,i2c_reg_array.reg_addr=%x",i2c_reg_array.reg_data,i2c_reg_array.reg_addr);
+				rc = camera_io_dev_write(&e_ctrl->io_master_info, &i2c_reg_settings);
+				if (rc) {
+					CAM_ERR(CAM_EEPROM, "write init params failed rc %d", rc);
+					return rc;
+				}
+			}
+		}
+	}
+	return rc;
+}
+//+bug535065,liuxingyu.wt,ADD,2020/05/05,bring up s5k4h7 dongci
+
 int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 {
 	int rc = 0;
 	uint32_t chipid = 0;
+	char module_id = 0;
 	struct cam_camera_slave_info *slave_info;
 
 	slave_info = &(s_ctrl->sensordata->slave_info);
@@ -624,23 +799,373 @@ int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 		return -EINVAL;
 	}
 
-	rc = camera_io_dev_read(
-		&(s_ctrl->io_master_info),
-		slave_info->sensor_id_reg_addr,
-		&chipid,
-		s_ctrl->sensor_probe_addr_type,
-		s_ctrl->sensor_probe_data_type);
+    //+bug535065, Chris.wt, MODIFY, 20200312, image sensor read sensor id for byte type Addr.
+    if (slave_info->sensor_id == 0x5035 || slave_info->sensor_id == 0x5036 || slave_info->sensor_id == 0x5037 ||slave_info->sensor_id == 0x8044) { //0x5035:n19_gc5035_front_qunhui 0x8044:n19_gc8034_back_cxt 0x5036:n19_gc5035_front_unionimage
+        CAM_DBG(CAM_SENSOR, "read id: 0x%x for byte type Addr. entry~:", slave_info->sensor_id);
+        rc = camera_io_dev_read(
+				&(s_ctrl->io_master_info),
+				slave_info->sensor_id_reg_addr,
+				&chipid, CAMERA_SENSOR_I2C_TYPE_BYTE,
+				CAMERA_SENSOR_I2C_TYPE_WORD);
+    } else {
+        rc = camera_io_dev_read(
+				&(s_ctrl->io_master_info),
+				slave_info->sensor_id_reg_addr,
+                &chipid,
+                s_ctrl->sensor_probe_addr_type,
+                s_ctrl->sensor_probe_data_type);
+    }
+    //-bug535065, Chris.wt, MODIFY, 20200312, image sensor read sensor id for byte type Addr.
 
-	CAM_DBG(CAM_SENSOR, "read id: 0x%x expected id 0x%x:",
+	//+bug535065,liuxingyu.wt,modity,2020/05/05,bring up s5k4h7 dongci
+	CAM_INFO(CAM_SENSOR, "read id: 0x%x expected id 0x%x:",
 		chipid, slave_info->sensor_id);
 
-	if (cam_sensor_id_by_mask(s_ctrl, chipid) != slave_info->sensor_id) {
+	if(cam_sensor_id_by_mask(s_ctrl, chipid) == 0x487B){
+		read_n19_s5k4h7yx_module_id(s_ctrl, &module_id);
+		CAM_INFO(CAM_SENSOR, "module_id : 0x%x",module_id);
+		if((slave_info->sensor_id == 0x487B) && (module_id == 0x10))
+			CAM_INFO(CAM_SENSOR, "s5k4h7 helitai");
+		else if(((slave_info->sensor_id == 0x487C) && (module_id == 0x13)))
+			CAM_INFO(CAM_SENSOR, "s5k4h7 dongci");
+		else
+			return -ENODEV;
+	//+bug535065,qinduilin.wt,ADD,2021/01/18,add union image gc5035 bring up
+	} else if((cam_sensor_id_by_mask(s_ctrl, chipid) == 0x5035) && (s_ctrl->sensordata->slave_info.sensor_slave_addr == 0x7e)){
+		rc = read_gc5035_mouduleid(s_ctrl, &module_id);
+		CAM_INFO(CAM_SENSOR, "GC5035 module_id:0x%X", module_id);
+		if (rc) {
+			CAM_ERR(CAM_EEPROM, "gc5035 read module info failed, rc %d", rc);
+		}
+		if((slave_info->sensor_id == 0x5035) && (module_id == 0x0A))
+			CAM_INFO(CAM_SENSOR, "gc5035 qunhui");
+		else if(((slave_info->sensor_id == 0x5036) && (module_id == 0x1A)))
+			CAM_INFO(CAM_SENSOR, "gc5035 unionimage");
+		else if(((slave_info->sensor_id == 0x5037) && (module_id == 0x16)))
+			CAM_INFO(CAM_SENSOR, "gc5035 cxt");
+		else
+			return -ENODEV;
+	//-bug535065,qinduilin.wt,ADD,2021/01/18,add union image gc5035 bring up
+	} else if (cam_sensor_id_by_mask(s_ctrl, chipid) != slave_info->sensor_id) {
 		CAM_WARN(CAM_SENSOR, "read id: 0x%x expected id 0x%x:",
 				chipid, slave_info->sensor_id);
 		return -ENODEV;
 	}
+	//-bug535065,liuxingyu.wt,modity,2020/05/05,bring up s5k4h7 dongci
+
+    //+bug594012 liuxingyu.wt, add, 20201021 ,add camera info interface for factory app
+	if ( slave_info->sensor_id == 0x4608){
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM,"n19_hi846_back_txd");
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM_MOUDULE_ID,"tongxingda");
+	}else if ( slave_info->sensor_id == 0x487B){
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM,"n19_s5k4h7yx_back_helitai");
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM_MOUDULE_ID,"helitai");
+	}else if ( slave_info->sensor_id == 0x0556){
+		hardwareinfo_set_prop(HARDWARE_FRONT_CAM,"n19_hi556_front_shengtai");
+		hardwareinfo_set_prop(HARDWARE_FRONT_CAM_MOUDULE_ID,"shengtai");
+	}else if ( slave_info->sensor_id == 0x5035){
+		if(s_ctrl->sensordata->slave_info.sensor_slave_addr == 0x7e){
+			hardwareinfo_set_prop(HARDWARE_FRONT_CAM,"n19_gc5035_front_qunhui");
+			hardwareinfo_set_prop(HARDWARE_FRONT_CAM_MOUDULE_ID,"qunhui");
+		} else if(s_ctrl->sensordata->slave_info.sensor_slave_addr == 0x6e){
+			hardwareinfo_set_prop(HARDWARE_FRONT_CAM,"n19_gc5035_front_cxt");
+			hardwareinfo_set_prop(HARDWARE_FRONT_CAM_MOUDULE_ID,"cxt");
+		}
+	}else if ( slave_info->sensor_id == 0x487C){
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM,"n19_s5k4h7yx_back_dongci");
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM_MOUDULE_ID,"dongci");
+	}else if ( slave_info->sensor_id == 0x8044){
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM,"n19_gc8034_back_cxt");
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM_MOUDULE_ID,"cxt");
+	//+bug535065,qinduilin.wt,ADD,2021/01/18,add union image gc5035 bring up
+	}else if ( slave_info->sensor_id == 0x5036){
+		hardwareinfo_set_prop(HARDWARE_FRONT_CAM,"n19_gc5035_front_unionimage");
+		hardwareinfo_set_prop(HARDWARE_FRONT_CAM_MOUDULE_ID,"unionimage");
+	}else if ( slave_info->sensor_id == 0x5037){
+		hardwareinfo_set_prop(HARDWARE_FRONT_CAM,"n19_gc5035_front_cxt");
+		hardwareinfo_set_prop(HARDWARE_FRONT_CAM_MOUDULE_ID,"cxt");
+	//+bug535065 huangzheng1.wt, add, 202102022 ,add camera info interface for factory app
+	}else if ( slave_info->sensor_id == 0x0802){
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM,"n19_c8490_back_dongci");
+		hardwareinfo_set_prop(HARDWARE_BACK_CAM_MOUDULE_ID,"dongci");
+	}
+	//-bug535065 huangzheng1.wt, add, 202102022 ,add camera info interface for factory app
+	//-bug535065,qinduilin.wt,ADD,2021/01/18,add union image gc5035 bring up
+	//-bug594012 liuxingyu.wt, add, 20201021 ,add camera info interface for factory app
+
 	return rc;
 }
+//+bug535065, zhoumin.wt, ADD, 20200522, add for gc5035 otp dd calibration.
+extern uint16_t gc5035_dd_total_number;
+struct eeprom_memory_map_init_write_params n19_gc5035_write_dd_params  ={
+    .slave_addr = 0x7e,
+          .mem_settings =
+          {
+            {0xfa, CAMERA_SENSOR_I2C_TYPE_BYTE,0x10, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xfe, CAMERA_SENSOR_I2C_TYPE_BYTE,0x02, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x67, CAMERA_SENSOR_I2C_TYPE_BYTE,0xc0, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xbe, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xa9, CAMERA_SENSOR_I2C_TYPE_BYTE,0x01, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x09, CAMERA_SENSOR_I2C_TYPE_BYTE,0x33, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x01, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x02, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x03, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x04, CAMERA_SENSOR_I2C_TYPE_BYTE,0x80, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x95, CAMERA_SENSOR_I2C_TYPE_BYTE,0x0a, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x96, CAMERA_SENSOR_I2C_TYPE_BYTE,0x30, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x97, CAMERA_SENSOR_I2C_TYPE_BYTE,0x0a, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x98, CAMERA_SENSOR_I2C_TYPE_BYTE,0x32, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x99, CAMERA_SENSOR_I2C_TYPE_BYTE,0x07, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x9a, CAMERA_SENSOR_I2C_TYPE_BYTE,0xa9, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xf3, CAMERA_SENSOR_I2C_TYPE_BYTE,0x80, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xbe, CAMERA_SENSOR_I2C_TYPE_BYTE,0x01, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x09, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xfe, CAMERA_SENSOR_I2C_TYPE_BYTE,0x01, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x80, CAMERA_SENSOR_I2C_TYPE_BYTE,0x02, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xfe, CAMERA_SENSOR_I2C_TYPE_BYTE,0x02, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0x67, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xfe, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+            {0xfa, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+          },
+          .memory_map_size = 25,
+};
+
+static int write_n19_gc5035_dd_params(struct cam_sensor_ctrl_t *e_ctrl, uint16_t total_number)
+{
+	int i, rc = 0;
+	struct cam_sensor_i2c_reg_setting  i2c_reg_settings = {0};
+	struct cam_sensor_i2c_reg_array    i2c_reg_array = {0};
+
+	if(total_number == 0)
+	{
+		CAM_ERR(CAM_EEPROM, "gc5035 read DDdata params is empty, return -1");
+		return -1;
+	}
+	else
+	{
+		for(i=0; i < n19_gc5035_write_dd_params.memory_map_size; i++)
+		{
+			i2c_reg_settings.addr_type = n19_gc5035_write_dd_params.mem_settings[i].addr_type;
+			i2c_reg_settings.data_type = n19_gc5035_write_dd_params.mem_settings[i].data_type;
+			i2c_reg_settings.size = 1;
+			i2c_reg_array.reg_addr = n19_gc5035_write_dd_params.mem_settings[i].reg_addr;
+			i2c_reg_array.reg_data = n19_gc5035_write_dd_params.mem_settings[i].reg_data;
+			if(i == 6)
+				i2c_reg_array.reg_data = (total_number >> 8) & 0x07;
+			if(i == 7)
+				i2c_reg_array.reg_data = total_number & 0xff;
+			i2c_reg_array.delay = n19_gc5035_write_dd_params.mem_settings[i].delay;
+			i2c_reg_settings.reg_setting = &i2c_reg_array;
+
+			rc = camera_io_dev_write(&e_ctrl->io_master_info, &i2c_reg_settings);
+			if (rc) {
+				CAM_ERR(CAM_EEPROM, "gc5035 write DDdata params failed, rc %d", rc);
+				return rc;
+			}
+		}
+		CAM_DBG(CAM_EEPROM, "gc5035 write DDdata params succed, rc %d", rc);
+		return rc;
+	}
+}
+//-bug535065, zhoumin.wt, ADD, 20200522, add for gc5035 otp dd calibration.
+
+//+bug535065, zhoumin.wt, ADD, 20200706, add for gc5035 update register value.
+extern uint8_t gc5035_update_register_value[26];
+static int n19_gc5035_write_update_register_value(struct cam_sensor_ctrl_t *e_ctrl, uint8_t *register_value)
+{
+	int i, j, rc = 0;
+	int base_group;
+	struct cam_sensor_i2c_reg_setting  i2c_reg_settings = {0};
+	struct cam_sensor_i2c_reg_array    i2c_reg_array = {0};
+
+	if((register_value == NULL)  || ((register_value[0] & 0x03) != 0x01))     //register value flag
+	{
+		CAM_ERR(CAM_EEPROM, "gc5035 update_register_value is empty, return -1");
+		return -1;
+	}
+	else
+	{
+		for(i=0; i < 5; i++)
+		{
+			base_group = i * 5;
+			for(j=0; j < 2; j++)
+			{
+				if (0x01 == ((register_value[base_group+1] >> (4 * j + 3)) & 0x01))   //checksum
+				{
+					i2c_reg_settings.addr_type = CAMERA_SENSOR_I2C_TYPE_BYTE;
+					i2c_reg_settings.data_type = CAMERA_SENSOR_I2C_TYPE_BYTE;
+					i2c_reg_settings.size = 1;
+					i2c_reg_array.reg_addr = 0xfe;
+					i2c_reg_array.reg_data = (register_value[base_group+1] >> (4 * j) )& 0x07;//register page
+					i2c_reg_array.delay = 0x00;
+					i2c_reg_settings.reg_setting = &i2c_reg_array;
+
+					rc = camera_io_dev_write(&e_ctrl->io_master_info, &i2c_reg_settings);
+					if (rc) {
+						CAM_ERR(CAM_EEPROM, "gc5035 update register value failed, rc %d", rc);
+						return rc;
+					}
+
+					i2c_reg_settings.addr_type = CAMERA_SENSOR_I2C_TYPE_BYTE;
+					i2c_reg_settings.data_type = CAMERA_SENSOR_I2C_TYPE_BYTE;
+					i2c_reg_settings.size = 1;
+					i2c_reg_array.reg_addr = register_value[base_group + j * 2 + 2];//register addr
+					i2c_reg_array.reg_data = register_value[base_group + j * 2 + 3];//register value
+					i2c_reg_array.delay = 0x00;
+					i2c_reg_settings.reg_setting = &i2c_reg_array;
+
+					rc = camera_io_dev_write(&e_ctrl->io_master_info, &i2c_reg_settings);
+					if (rc) {
+						CAM_ERR(CAM_EEPROM, "gc5035 update register value failed, rc %d", rc);
+						return rc;
+					}
+					CAM_DBG(CAM_EEPROM, "gc5035 update register value: addr: 0x%x, data: 0x%x", i2c_reg_array.reg_addr , i2c_reg_array.reg_data);
+				}
+			}
+		}
+		CAM_INFO(CAM_EEPROM, "gc5035 update register value succed, rc %d", rc);
+		return rc;
+	}
+}
+//-bug535065, zhoumin.wt, ADD, 20200706, add for gc5035 update register value.
+
+//+bug535065,qinduilin.wt,ADD,2021/01/18,add union image gc5035 bring up
+struct eeprom_memory_map_init_write_params n19_gc5035_read_mouduleid_param  ={
+	.slave_addr = 0x7e,
+		.mem_settings =
+		{
+			{0xfc, CAMERA_SENSOR_I2C_TYPE_BYTE,0x01, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf4, CAMERA_SENSOR_I2C_TYPE_BYTE,0x40, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf5, CAMERA_SENSOR_I2C_TYPE_BYTE,0xe9, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf6, CAMERA_SENSOR_I2C_TYPE_BYTE,0x14, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf8, CAMERA_SENSOR_I2C_TYPE_BYTE,0x49, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf9, CAMERA_SENSOR_I2C_TYPE_BYTE,0x82, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xfa, CAMERA_SENSOR_I2C_TYPE_BYTE,0x10, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xfc, CAMERA_SENSOR_I2C_TYPE_BYTE,0x81, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xfe, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x36, CAMERA_SENSOR_I2C_TYPE_BYTE,0x01, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xd3, CAMERA_SENSOR_I2C_TYPE_BYTE,0x87, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x36, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf7, CAMERA_SENSOR_I2C_TYPE_BYTE,0x01, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xfc, CAMERA_SENSOR_I2C_TYPE_BYTE,0x8f, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xfc, CAMERA_SENSOR_I2C_TYPE_BYTE,0x8f, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xfc, CAMERA_SENSOR_I2C_TYPE_BYTE,0x8e, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xfe, CAMERA_SENSOR_I2C_TYPE_BYTE,0x02, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x55, CAMERA_SENSOR_I2C_TYPE_BYTE,0x84, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x65, CAMERA_SENSOR_I2C_TYPE_BYTE,0x7e, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x66, CAMERA_SENSOR_I2C_TYPE_BYTE,0x03, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x67, CAMERA_SENSOR_I2C_TYPE_BYTE,0xc0, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x68, CAMERA_SENSOR_I2C_TYPE_BYTE,0x11, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xe0, CAMERA_SENSOR_I2C_TYPE_BYTE,0x0a, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x67, CAMERA_SENSOR_I2C_TYPE_BYTE,0xf0, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf3, CAMERA_SENSOR_I2C_TYPE_BYTE,0x10, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x67, CAMERA_SENSOR_I2C_TYPE_BYTE,0xc0, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf3, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xe0, CAMERA_SENSOR_I2C_TYPE_BYTE,0x0b, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x67, CAMERA_SENSOR_I2C_TYPE_BYTE,0xf0, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf3, CAMERA_SENSOR_I2C_TYPE_BYTE,0x10, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0x67, CAMERA_SENSOR_I2C_TYPE_BYTE,0xc0, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+			{0xf3, CAMERA_SENSOR_I2C_TYPE_BYTE,0x00, CAMERA_SENSOR_I2C_TYPE_BYTE, 0x00},
+		},
+		.memory_map_size = 32,
+};
+
+static int read_gc5035_mouduleid(struct cam_sensor_ctrl_t *e_ctrl, uint8_t *moduleid)
+{
+	int i, rc = 0;
+	uint16_t sum = 0;
+	uint8_t moduleinfo[35] = {0};
+	uint8_t checksum = 0, checkcount = 0;
+	struct cam_sensor_i2c_reg_setting  i2c_reg_settings = {0};
+	struct cam_sensor_i2c_reg_array    i2c_reg_array = {0};
+
+	for (i = 0; i < 25; i++) {
+		i2c_reg_settings.addr_type = n19_gc5035_read_mouduleid_param.mem_settings[i].addr_type;
+		i2c_reg_settings.data_type = n19_gc5035_read_mouduleid_param.mem_settings[i].data_type;
+		i2c_reg_settings.size = 1;
+		i2c_reg_array.reg_addr = n19_gc5035_read_mouduleid_param.mem_settings[i].reg_addr;
+		i2c_reg_array.reg_data = n19_gc5035_read_mouduleid_param.mem_settings[i].reg_data;
+		i2c_reg_array.delay = n19_gc5035_read_mouduleid_param.mem_settings[i].delay;
+		i2c_reg_settings.reg_setting = &i2c_reg_array;
+
+		rc = camera_io_dev_write(&e_ctrl->io_master_info, &i2c_reg_settings);
+		if (rc) {
+			CAM_ERR(CAM_EEPROM, "gc5035 read DDdata params failed, rc %d", rc);
+			return rc;
+		}
+	}
+	rc = camera_io_dev_read_seq(&e_ctrl->io_master_info, 0xC8, moduleinfo,CAMERA_SENSOR_I2C_TYPE_BYTE,CAMERA_SENSOR_I2C_TYPE_BYTE,0x18);
+	if (rc) {
+		CAM_ERR(CAM_EEPROM, "gc5035 read DDdata params failed, rc %d", rc);
+		return rc;
+	}
+	for ( i = 25; i < 30; i++) {
+		i2c_reg_settings.addr_type = n19_gc5035_read_mouduleid_param.mem_settings[i].addr_type;
+		i2c_reg_settings.data_type = n19_gc5035_read_mouduleid_param.mem_settings[i].data_type;
+		i2c_reg_settings.size = 1;
+		i2c_reg_array.reg_addr = n19_gc5035_read_mouduleid_param.mem_settings[i].reg_addr;
+		i2c_reg_array.reg_data = n19_gc5035_read_mouduleid_param.mem_settings[i].reg_data;
+		i2c_reg_array.delay = n19_gc5035_read_mouduleid_param.mem_settings[i].delay;
+		i2c_reg_settings.reg_setting = &i2c_reg_array;
+
+		rc = camera_io_dev_write(&e_ctrl->io_master_info, &i2c_reg_settings);
+		if (rc) {
+			CAM_ERR(CAM_EEPROM, "gc5035 read DDdata params failed, rc %d", rc);
+			return rc;
+		}
+	}
+	rc = camera_io_dev_read_seq(&e_ctrl->io_master_info, 0xC0, &moduleinfo[0x18],CAMERA_SENSOR_I2C_TYPE_BYTE,CAMERA_SENSOR_I2C_TYPE_BYTE,0x0b);
+	if (rc) {
+		CAM_ERR(CAM_EEPROM, "gc5035 read DDdata params failed, rc %d", rc);
+		return rc;
+	}
+	for ( i = 30; i < n19_gc5035_write_dd_params.memory_map_size; i++) {
+		i2c_reg_settings.addr_type = n19_gc5035_read_mouduleid_param.mem_settings[i].addr_type;
+		i2c_reg_settings.data_type = n19_gc5035_read_mouduleid_param.mem_settings[i].data_type;
+		i2c_reg_settings.size = 1;
+		i2c_reg_array.reg_addr = n19_gc5035_read_mouduleid_param.mem_settings[i].reg_addr;
+		i2c_reg_array.reg_data = n19_gc5035_read_mouduleid_param.mem_settings[i].reg_data;
+		i2c_reg_array.delay = n19_gc5035_read_mouduleid_param.mem_settings[i].delay;
+		i2c_reg_settings.reg_setting = &i2c_reg_array;
+
+		rc = camera_io_dev_write(&e_ctrl->io_master_info, &i2c_reg_settings);
+		if (rc) {
+			CAM_ERR(CAM_EEPROM, "gc5035 read DDdata params failed, rc %d", rc);
+			return rc;
+		}
+	}
+	if((moduleinfo[0] & 0x0C) == 0x04){//group1
+		if(e_ctrl->sensordata->slave_info.sensor_id == 0x5036){//union image
+			checkcount = 17;
+		}else{
+			checkcount = 12;
+		}
+		for (i = 1; i < checkcount; i++){
+			sum += moduleinfo[i];
+		}
+		checksum = (uint8_t)(sum % 0xFF + 1);
+		if (checksum == moduleinfo[17]){
+			*moduleid = moduleinfo[1];
+		}
+	}else if((moduleinfo[0] & 0x03) == 0x01){//group2
+		if(e_ctrl->sensordata->slave_info.sensor_id == 0x5036){//union image
+			checkcount = 34;
+		}else{
+			checkcount = 29;
+		}
+		for (i = 18; i < checkcount; i++){
+			sum += moduleinfo[i];
+		}
+		checksum = (uint8_t)(sum % 0xFF + 1);
+		if (checksum == moduleinfo[34]){
+			*moduleid = moduleinfo[18];
+		}
+	}else{
+		CAM_ERR(CAM_SENSOR, "GC5035 module id invalid");
+	}
+	return rc;
+}
+//-bug535065,qinduilin.wt,ADD,2021/01/18,add union image gc5035 bring up
 
 int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 	void *arg)
@@ -795,12 +1320,19 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			rc = -EFAULT;
 			goto release_mutex;
 		}
-
+		CAM_INFO(CAM_SENSOR, "CAM_ACQUIRE_DEV back_cam:%d  front_cam:%d",back_cam, front_cam); //bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
 		rc = cam_sensor_power_up(s_ctrl);
 		if (rc < 0) {
 			CAM_ERR(CAM_SENSOR, "Sensor Power up failed");
 			goto release_mutex;
 		}
+
+		//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+		if((s_ctrl->sensordata->slave_info.sensor_id == 0x487B) || (s_ctrl->sensordata->slave_info.sensor_id == 0x487C) || (s_ctrl->sensordata->slave_info.sensor_id == 0x4608) || (s_ctrl->sensordata->slave_info.sensor_id == 0x8044) || (s_ctrl->sensordata->slave_info.sensor_id == 0x0802))
+			back_cam = 1;
+		else if((s_ctrl->sensordata->slave_info.sensor_id == 0x0556) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5035) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5036) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5037))
+			front_cam = 1;
+		//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
 
 		s_ctrl->sensor_state = CAM_SENSOR_ACQUIRE;
 		s_ctrl->last_flush_req = 0;
@@ -834,6 +1366,13 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			CAM_ERR(CAM_SENSOR, "Sensor Power Down failed");
 			goto release_mutex;
 		}
+
+		//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+		if((s_ctrl->sensordata->slave_info.sensor_id == 0x487B) || (s_ctrl->sensordata->slave_info.sensor_id == 0x487C) || (s_ctrl->sensordata->slave_info.sensor_id == 0x4608) || (s_ctrl->sensordata->slave_info.sensor_id == 0x8044) || (s_ctrl->sensordata->slave_info.sensor_id == 0x0802))
+			back_cam = 0;
+		else if((s_ctrl->sensordata->slave_info.sensor_id == 0x0556) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5035) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5036) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5037))
+			front_cam = 0;
+		//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
 
 		cam_sensor_release_per_frame_resource(s_ctrl);
 		cam_sensor_release_stream_rsc(s_ctrl);
@@ -964,6 +1503,17 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 				delete_request(&s_ctrl->i2c_data.init_settings);
 				goto release_mutex;
 			}
+
+			//+bug535065, zhoumin.wt, ADD, 20200611, add for gc5035 can not switch to video preview when use 720P setting.
+			if((s_ctrl->sensordata->slave_info.sensor_id == 0x5035) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5036) || (s_ctrl->sensordata->slave_info.sensor_id == 0x5037))
+			{
+				CAM_INFO(CAM_EEPROM, "gc5035_DDdata_total_number is %d", gc5035_dd_total_number);
+				write_n19_gc5035_dd_params(s_ctrl, gc5035_dd_total_number);
+				//bug535065, zhoumin.wt, ADD, 20200706, add for gc5035 update register value.
+				n19_gc5035_write_update_register_value(s_ctrl, gc5035_update_register_value);
+			}
+			//-bug535065, zhoumin.wt, ADD, 20200611, add for gc5035 can not switch to video preview when use 720P setting.
+
 			rc = delete_request(&s_ctrl->i2c_data.init_settings);
 			if (rc < 0) {
 				CAM_ERR(CAM_SENSOR,

@@ -20,6 +20,10 @@
 #include "cam_sensor_io.h"
 
 #define INVALID_VREG 100
+//+bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
+extern bool back_cam;
+extern bool front_cam;
+//-bug549349, liuxingyu.wt, ADD, 2020/05/11 , add for cts testMultiCameraRelease
 
 int cam_get_dt_power_setting_data(struct device_node *of_node,
 	struct cam_hw_soc_info *soc_info,

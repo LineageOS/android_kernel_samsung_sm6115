@@ -142,6 +142,12 @@ enum msm_camera_power_seq_type {
 	SENSOR_STANDBY,
 	SENSOR_CUSTOM_GPIO1,
 	SENSOR_CUSTOM_GPIO2,
+	//+bug594012, liuxingyu.wt, ADD, 20201020, for modified camera sensor hw  gpio info;
+	SENSOR_CUSTOM_GPIO_VANA,
+	SENSOR_CUSTOM_GPIO_VDIG,
+	SENSOR_CUSTOM_GPIO_VIO,
+	SENSOR_CUSTOM_GPIO_VAF,
+	//-bug594012, liuxingyu.wt, ADD, 20201020, for modified camera sensor hw  gpio info;
 	SENSOR_SEQ_TYPE_MAX,
 };
 
