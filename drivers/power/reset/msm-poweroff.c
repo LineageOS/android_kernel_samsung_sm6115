@@ -49,6 +49,8 @@
 #define KASLR_OFFSET_PROP "qcom,msm-imem-kaslr_offset"
 #define KASLR_OFFSET_BIT_MASK	0x00000000FFFFFFFF
 
+#define PON_RESTART_REASON_NORMALBOOT 0x14
+#define PON_RESTART_REASON_DOWNLOAD   0x15
 #define PON_RESTART_REASON_CROSS_FAIL 0x2C
 
 static int restart_mode;
@@ -565,7 +567,11 @@ static void msm_restart_prepare(const char *cmd)
 			if (!ret)
 				__raw_writel(0x6f656d00 | (code & 0xff),
 					     restart_reason);
+		} else if (!strncmp(cmd, "download",8)) {
+			qpnp_pon_set_restart_reason(PON_RESTART_REASON_DOWNLOAD);
+			__raw_writel(0x77665501, restart_reason);
 		} else {
+			qpnp_pon_set_restart_reason(PON_RESTART_REASON_NORMALBOOT);
 			__raw_writel(0x77665501, restart_reason);
 		}
 	}
