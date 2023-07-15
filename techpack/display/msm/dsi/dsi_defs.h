@@ -307,6 +307,21 @@ enum dsi_cmd_set_type {
 	DSI_CMD_SET_POST_TIMING_SWITCH,
 	DSI_CMD_SET_QSYNC_ON,
 	DSI_CMD_SET_QSYNC_OFF,
+	/*bug536291,sijun.wt,2020/0505,lcd esd check begin*/
+	DSI_CMD_SET_HX83102E_MASTER,
+	DSI_CMD_SET_HX83102E_CLIENT,
+/*bug536291,sijun.wt,2020/0512,add nt36523 ic esd check begin*/
+	DSI_CMD_SET_NT36523_MASTER,
+	DSI_CMD_SET_NT36523_CLIENT,
+/*bug536291,sijun.wt,2020/0512,add nt36523 ic esd check end*/
+//+bug616968,wangcong.wt,add,2021/01/21,add ft8201ab esd check
+	DSI_CMD_SET_FT8201AB_MASTER,
+	DSI_CMD_SET_FT8201AB_SLAVE,
+	DSI_CMD_SET_FT8201AB_CLIENT,
+//-bug616968,wangcong.wt,add,2021/01/21,add ft8201ab esd check
+	DSI_CMD_SET_DSTB,//bug536291,sijun.wt,2020/0415,add tp gesture function
+	DSI_CMD_SET_DIMING_OFF,
+/*bug536291,sijun.wt,2020/0505,lcd esd check end*/
 	DSI_CMD_SET_MAX
 };
 

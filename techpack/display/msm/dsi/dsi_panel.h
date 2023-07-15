@@ -118,11 +118,13 @@ struct dsi_backlight_config {
 	u32 bl_min_level;
 	u32 bl_max_level;
 	u32 brightness_max_level;
+        u32 brightness_default_level;//liuchunyang.wt add 2021 11 27
 	u32 bl_level;
 	u32 bl_scale;
 	u32 bl_scale_sv;
 	bool bl_inverted_dbv;
-	u32 bl_dcs_subtype;
+	//bug616968,wangcong.wt,modify,2021/01/21,modify lcd ft8012ab lide hsd backlight
+	bool bl_ft8201ab_dbv;
 
 	int en_gpio;
 	/* PWM params */
@@ -145,6 +147,7 @@ struct dsi_panel_reset_config {
 	u32 count;
 
 	int reset_gpio;
+	int vcc;//liuchunyang.wt add 2021 11 27
 	int disp_en_gpio;
 	int lcd_mode_sel_gpio;
 	u32 mode_sel_state;
@@ -171,7 +174,15 @@ struct drm_panel_esd_config {
 	u8 *status_buf;
 	u32 groups;
 };
-
+/*bug536291,sijun.wt,2020/0415,add read panel register function begin*/
+struct dsi_read_config {
+	bool enabled;
+	struct dsi_panel_cmd_set read_cmd;
+	u32 cmds_rlen;
+	u32 valid_bits;
+	u8 rbuf[64];
+};
+/*bug536291,sijun.wt,2020/0415,add read panel register function end*/
 struct dsi_panel {
 	const char *name;
 	const char *type;
@@ -207,6 +218,11 @@ struct dsi_panel {
 	struct dsi_parser_utils utils;
 
 	bool lp11_init;
+	bool hx83102e_flag;
+	//bug702116, liuchunyang.wt,20211127,add,2021/01/21,add ft8201ab esd check
+	bool ft8201ab_flag;
+	bool ft8201ab_tianma_flag;
+	bool hxlide_flag;
 	bool ulps_feature_enabled;
 	bool ulps_suspend_enabled;
 	bool allow_phy_power_off;
