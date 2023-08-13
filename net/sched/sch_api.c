@@ -315,6 +315,24 @@ out:
 	return q;
 }
 
+struct Qdisc *qdisc_lookup_rcu(struct net_device *dev, u32 handle)
+{
+	struct netdev_queue *nq;
+	struct Qdisc *q;
+
+	if (!handle)
+		return NULL;
+	q = qdisc_match_from_root(dev->qdisc, handle);
+	if (q)
+		goto out;
+
+	nq = dev_ingress_queue_rcu(dev);
+	if (nq)
+		q = qdisc_match_from_root(nq->qdisc_sleeping, handle);
+out:
+	return q;
+}
+
 static struct Qdisc *qdisc_leaf(struct Qdisc *p, u32 classid)
 {
 	unsigned long cl;
@@ -398,7 +416,8 @@ struct qdisc_rate_table *qdisc_get_rtab(struct tc_ratespec *r,
 {
 	struct qdisc_rate_table *rtab;
 
-	if (tab == NULL || r->rate == 0 || r->cell_log == 0 ||
+	if (tab == NULL || r->rate == 0 ||
+	    r->cell_log == 0 || r->cell_log >= 32 ||
 	    nla_len(tab) != TC_RTAB_SIZE) {
 		NL_SET_ERR_MSG(extack, "Invalid rate table parameters for searching");
 		return NULL;
@@ -495,6 +514,12 @@ static struct qdisc_size_table *qdisc_get_stab(struct nlattr *opt,
 			continue;
 		stab->refcnt++;
 		return stab;
+	}
+
+	if (s->size_log > STAB_SIZE_LOG_MAX ||
+	    s->cell_log > STAB_SIZE_LOG_MAX) {
+		NL_SET_ERR_MSG(extack, "Invalid logarithmic size of size table");
+		return ERR_PTR(-EINVAL);
 	}
 
 	stab = kmalloc(sizeof(*stab) + tsize * sizeof(u16), GFP_KERNEL);
@@ -921,7 +946,7 @@ static void notify_and_destroy(struct net *net, struct sk_buff *skb,
 		qdisc_notify(net, skb, n, clid, old, new);
 
 	if (old)
-		qdisc_destroy(old);
+		qdisc_put(old);
 }
 
 /* Graft qdisc "new" to class "classid" of qdisc "parent" or
@@ -974,7 +999,7 @@ static int qdisc_graft(struct net_device *dev, struct Qdisc *parent,
 				qdisc_refcount_inc(new);
 
 			if (!ingress)
-				qdisc_destroy(old);
+				qdisc_put(old);
 		}
 
 skip:
@@ -1006,8 +1031,12 @@ skip:
 			unsigned long cl = cops->find(parent, classid);
 
 			if (cl) {
-				err = cops->graft(parent, cl, new, &old,
-						  extack);
+				if (new && new->ops == &noqueue_qdisc_ops) {
+					NL_SET_ERR_MSG(extack, "Cannot assign noqueue to a class");
+					err = -EINVAL;
+				} else {
+					err = cops->graft(parent, cl, new, &old, extack);
+				}
 			} else {
 				NL_SET_ERR_MSG(extack, "Specified class not found");
 				err = -ENOENT;
@@ -1106,7 +1135,7 @@ static struct Qdisc *qdisc_create(struct net_device *dev,
 
 	err = -ENOENT;
 	if (!ops) {
-		NL_SET_ERR_MSG(extack, "Specified qdisc not found");
+		NL_SET_ERR_MSG(extack, "Specified qdisc kind is unknown");
 		goto err_out;
 	}
 
@@ -1119,7 +1148,12 @@ static struct Qdisc *qdisc_create(struct net_device *dev,
 	sch->parent = parent;
 
 	if (handle == TC_H_INGRESS) {
-		sch->flags |= TCQ_F_INGRESS;
+		if (!(sch->flags & TCQ_F_INGRESS)) {
+			NL_SET_ERR_MSG(extack,
+				       "Specified parent ID is reserved for ingress and clsact Qdiscs");
+			err = -EINVAL;
+			goto err_out3;
+		}
 		handle = TC_H_MAKE(TC_H_INGRESS, 0);
 		lockdep_set_class(qdisc_lock(sch), &qdisc_rx_lock);
 	} else {
@@ -1514,10 +1548,19 @@ replay:
 					NL_SET_ERR_MSG(extack, "Invalid qdisc name");
 					return -EINVAL;
 				}
+				if (q->flags & TCQ_F_INGRESS) {
+					NL_SET_ERR_MSG(extack,
+						       "Cannot regraft ingress or clsact Qdiscs");
+					return -EINVAL;
+				}
 				if (q == p ||
 				    (p && check_loop(q, p, 0))) {
 					NL_SET_ERR_MSG(extack, "Qdisc parent/child loop detected");
 					return -ELOOP;
+				}
+				if (clid == TC_H_INGRESS) {
+					NL_SET_ERR_MSG(extack, "Ingress cannot graft directly");
+					return -EINVAL;
 				}
 				qdisc_refcount_inc(q);
 				goto graft;
@@ -1616,7 +1659,7 @@ graft:
 	err = qdisc_graft(dev, p, skb, n, clid, q, NULL, extack);
 	if (err) {
 		if (q)
-			qdisc_destroy(q);
+			qdisc_put(q);
 		return err;
 	}
 
@@ -2081,7 +2124,7 @@ static int tc_dump_tclass_qdisc(struct Qdisc *q, struct sk_buff *skb,
 
 static int tc_dump_tclass_root(struct Qdisc *root, struct sk_buff *skb,
 			       struct tcmsg *tcm, struct netlink_callback *cb,
-			       int *t_p, int s_t)
+			       int *t_p, int s_t, bool recur)
 {
 	struct Qdisc *q;
 	int b;
@@ -2092,7 +2135,7 @@ static int tc_dump_tclass_root(struct Qdisc *root, struct sk_buff *skb,
 	if (tc_dump_tclass_qdisc(root, skb, tcm, cb, t_p, s_t) < 0)
 		return -1;
 
-	if (!qdisc_dev(root))
+	if (!qdisc_dev(root) || !recur)
 		return 0;
 
 	if (tcm->tcm_parent) {
@@ -2127,13 +2170,13 @@ static int tc_dump_tclass(struct sk_buff *skb, struct netlink_callback *cb)
 	s_t = cb->args[0];
 	t = 0;
 
-	if (tc_dump_tclass_root(dev->qdisc, skb, tcm, cb, &t, s_t) < 0)
+	if (tc_dump_tclass_root(dev->qdisc, skb, tcm, cb, &t, s_t, true) < 0)
 		goto done;
 
 	dev_queue = dev_ingress_queue(dev);
 	if (dev_queue &&
 	    tc_dump_tclass_root(dev_queue->qdisc_sleeping, skb, tcm, cb,
-				&t, s_t) < 0)
+				&t, s_t, false) < 0)
 		goto done;
 
 done:

@@ -50,6 +50,10 @@
 #include <linux/host_notify.h>
 #endif
 
+static bool bc12_compliance;
+module_param(bc12_compliance, bool, 0644);
+MODULE_PARM_DESC(bc12_compliance, "Disable sending dp pulse for CDP");
+
 #define SDP_CONNETION_CHECK_TIME 10000 /* in ms */
 #define EXTCON_SYNC_EVENT_TIMEOUT_MS 1500 /* in ms */
 
@@ -362,6 +366,7 @@ struct dwc3_msm {
 	u64			dummy_gsi_db;
 	dma_addr_t		dummy_gsi_db_dma;
 	int			orientation_override;
+	bool			usb_data_enabled;
 };
 
 #define USB_HSPHY_3P3_VOL_MIN		3050000 /* uV */
@@ -1157,7 +1162,7 @@ static void gsi_endxfer_for_ep(struct usb_ep *ep)
 	struct dwc3_ep *dep = to_dwc3_ep(ep);
 	struct dwc3	*dwc = dep->dwc;
 
-	dwc3_stop_active_transfer(dwc, dep->number, true);
+	dwc3_stop_active_transfer(dwc, dep->number, true, false);
 }
 
 /**
@@ -3300,6 +3305,9 @@ static int dwc3_msm_id_notifier(struct notifier_block *nb,
 	if (!edev || !mdwc)
 		return NOTIFY_DONE;
 
+	if (!mdwc->usb_data_enabled)
+		return NOTIFY_DONE;
+
 	dwc = platform_get_drvdata(mdwc->dwc3);
 
 	dbg_event(0xFF, "extcon idx", enb->idx);
@@ -3361,6 +3369,14 @@ static int dwc3_msm_vbus_notifier(struct notifier_block *nb,
 	if (!edev || !mdwc)
 		return NOTIFY_DONE;
 
+	if (!mdwc->usb_data_enabled) {
+		if (event)
+			dwc3_msm_gadget_vbus_draw(mdwc, 500);
+		else
+			dwc3_msm_gadget_vbus_draw(mdwc, 0);
+		return NOTIFY_DONE;
+	}
+
 	dwc = platform_get_drvdata(mdwc->dwc3);
 
 	dbg_event(0xFF, "extcon idx", enb->idx);
@@ -3386,7 +3402,8 @@ static int dwc3_msm_vbus_notifier(struct notifier_block *nb,
 	 * and only when the vbus connect event is a valid one.
 	 */
 	if (get_psy_type(mdwc) == POWER_SUPPLY_TYPE_USB_CDP &&
-			mdwc->vbus_active && !mdwc->check_eud_state) {
+			mdwc->vbus_active &&
+				!mdwc->check_eud_state && !bc12_compliance) {
 		dev_dbg(mdwc->dev, "Connected to CDP, pull DP up\n");
 		usb_phy_drive_dp_pulse(mdwc->hs_phy, DP_PULSE_WIDTH_MSEC);
 	}
@@ -3692,6 +3709,35 @@ static int dwc_dpdm_cb(struct notifier_block *nb, unsigned long evt, void *p)
 
 	return NOTIFY_OK;
 }
+
+static ssize_t usb_data_enabled_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%s\n",
+			  mdwc->usb_data_enabled ? "enabled" : "disabled");
+}
+
+static ssize_t usb_data_enabled_store(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
+
+	if (kstrtobool(buf, &mdwc->usb_data_enabled))
+		return -EINVAL;
+
+	if (!mdwc->usb_data_enabled) {
+		mdwc->vbus_active = false;
+		mdwc->id_state = DWC3_ID_FLOAT;
+		dwc3_ext_event_notify(mdwc);
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(usb_data_enabled);
+
 static int dwc3_msm_probe(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node, *dwc3_node;
@@ -4004,6 +4050,9 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 
 	mutex_init(&mdwc->suspend_resume_mutex);
 
+	/* set the initial value */
+	mdwc->usb_data_enabled = true;
+
 	if (of_property_read_bool(node, "extcon")) {
 		ret = dwc3_msm_extcon_register(mdwc);
 		if (ret)
@@ -4076,6 +4125,7 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 	device_create_file(&pdev->dev, &dev_attr_speed);
 	device_create_file(&pdev->dev, &dev_attr_usb_compliance_mode);
 	device_create_file(&pdev->dev, &dev_attr_bus_vote);
+	device_create_file(&pdev->dev, &dev_attr_usb_data_enabled);
 
 	return 0;
 
@@ -4098,6 +4148,7 @@ static int dwc3_msm_remove(struct platform_device *pdev)
 	int ret_pm;
 
 	device_remove_file(&pdev->dev, &dev_attr_mode);
+	device_remove_file(&pdev->dev, &dev_attr_usb_data_enabled);
 
 	if (mdwc->dpdm_nb.notifier_call) {
 		regulator_unregister_notifier(mdwc->dpdm_reg, &mdwc->dpdm_nb);
@@ -4716,7 +4767,8 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 			mdwc->drd_state = DRD_STATE_PERIPHERAL;
 			work = 1;
 		} else {
-			dwc3_msm_gadget_vbus_draw(mdwc, 0);
+			if (mdwc->usb_data_enabled)
+				dwc3_msm_gadget_vbus_draw(mdwc, 0);
 			dev_dbg(mdwc->dev, "Cable disconnected\n");
 		}
 		break;
