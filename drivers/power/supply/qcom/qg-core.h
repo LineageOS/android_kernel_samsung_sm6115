@@ -16,6 +16,7 @@ struct qg_batt_props {
 	int			vbatt_full_mv;
 	int			fastchg_curr_ma;
 	int			qg_profile_version;
+	bool		qg_batt_aging_enable;
 };
 
 struct qg_irq_info {
@@ -126,6 +127,9 @@ struct qpnp_qg {
 	struct power_supply	*parallel_psy;
 	struct power_supply	*cp_psy;
 	struct qg_esr_data	esr_data[QG_MAX_ESR_COUNT];
+	struct range_data	vfloat_data[MAX_VFLOAT_ENTRIES];
+	struct range_data	vbat_rechg_data[MAX_VFLOAT_ENTRIES];
+	int			batt_cycle;
 
 	/* status variable */
 	u32			*debug_mask;

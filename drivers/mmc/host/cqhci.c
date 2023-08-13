@@ -281,6 +281,7 @@ static void __cqhci_enable(struct cqhci_host *cq_host)
 		cqcfg |= CQHCI_TASK_DESC_SZ;
 
 	if (cqhci_host_is_crypto_supported(cq_host)) {
+//		cqhci_crypto_enable(cq_host);
 		cqcfg |= CQHCI_ICE_ENABLE;
 		/* For SDHC v5.0 onwards, ICE 3.0 specific registers are added
 		 * in CQ register space, due to which few CQ registers are
@@ -324,6 +325,9 @@ static void __cqhci_disable(struct cqhci_host *cq_host)
 {
 	u32 cqcfg;
 
+//	if (cqhci_host_is_crypto_supported(cq_host))
+//		cqhci_crypto_disable(cq_host);
+//
 	cqcfg = cqhci_readl(cq_host, CQHCI_CFG);
 	cqcfg &= ~CQHCI_ENABLE;
 	cqhci_writel(cq_host, cqcfg, CQHCI_CFG);
@@ -366,11 +370,12 @@ static int cqhci_enable(struct mmc_host *mmc, struct mmc_card *card)
 	cq_host->rca = card->rca;
 
 	err = cqhci_host_alloc_tdl(cq_host);
-	if (err)
+	if (err) {
+		mmc_card_error_logging(mmc->card, NULL, CQ_EN_DIS_ERR);
 		return err;
-
-	if (cqhci_host_is_crypto_supported(cq_host))
-		cqhci_crypto_enable(cq_host);
+	}
+    if (cqhci_host_is_crypto_supported(cq_host))
+        cqhci_crypto_enable(cq_host);
 
 	__cqhci_enable(cq_host);
 
@@ -412,9 +417,10 @@ static void cqhci_off(struct mmc_host *mmc)
 
 	err = readx_poll_timeout(cqhci_read_ctl, cq_host, reg,
 				 reg & CQHCI_HALT, 0, CQHCI_OFF_TIMEOUT);
-	if (err < 0)
+	if (err < 0) {
+		mmc_card_error_logging(mmc->card, NULL, HALT_UNHALT_ERR);
 		pr_err("%s: cqhci: CQE stuck on\n", mmc_hostname(mmc));
-	else {
+	} else {
 		pr_debug("%s: cqhci: CQE off\n", mmc_hostname(mmc));
 		mmc_log_string(mmc, "cqhci: CQE off\n");
 	}
@@ -429,20 +435,19 @@ static void cqhci_disable(struct mmc_host *mmc)
 		return;
 
 	cqhci_off(mmc);
+    if (cqhci_host_is_crypto_supported(cq_host))
+        cqhci_crypto_disable(cq_host);
 
-	if (cqhci_host_is_crypto_supported(cq_host))
-		cqhci_crypto_disable(cq_host);
+    __cqhci_disable(cq_host);
 
-	__cqhci_disable(cq_host);
-
-	if (cq_host->ops->enhanced_strobe_mask)
+    if (cq_host->ops->enhanced_strobe_mask)
 		cq_host->ops->enhanced_strobe_mask(mmc, false);
 
-	dmam_free_coherent(mmc_dev(mmc), cq_host->data_size,
+    dmam_free_coherent(mmc_dev(mmc), cq_host->data_size,
 			   cq_host->trans_desc_base,
 			   cq_host->trans_desc_dma_base);
 
-	dmam_free_coherent(mmc_dev(mmc), cq_host->desc_size,
+    dmam_free_coherent(mmc_dev(mmc), cq_host->desc_size,
 			   cq_host->desc_base,
 			   cq_host->desc_dma_base);
 
@@ -685,6 +690,7 @@ static int cqhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		mmc_log_string(mmc, "cqhci: CQE on\n");
 		pr_debug("%s: cqhci: CQE on\n", mmc_hostname(mmc));
 		if (cqhci_readl(cq_host, CQHCI_CTL) && CQHCI_HALT) {
+			mmc_card_error_logging(mmc->card, NULL, HALT_UNHALT_ERR);
 			pr_err("%s: cqhci: CQE failed to exit halt state\n",
 			       mmc_hostname(mmc));
 		}
@@ -1091,8 +1097,10 @@ static bool cqhci_halt(struct mmc_host *mmc, unsigned int timeout)
 
 	ret = cqhci_halted(cq_host);
 
-	if (!ret)
+	if (!ret) {
+		mmc_card_error_logging(mmc->card, NULL, HALT_UNHALT_ERR);
 		pr_err("%s: cqhci: Failed to halt\n", mmc_hostname(mmc));
+	}
 
 	mmc_log_string(mmc, "halt done with ret %d\n", ret);
 	return ret;

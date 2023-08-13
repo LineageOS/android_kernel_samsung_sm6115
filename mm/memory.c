@@ -3895,10 +3895,11 @@ vm_fault_t finish_fault(struct vm_fault *vmf)
  * If architecture emulates "accessed" or "young" bit without HW support,
  * there is no much gain with fault_around.
  */
+#ifdef CONFIG_FAULT_AROUND_4KB
 static unsigned long fault_around_bytes __read_mostly =
-#ifndef __HAVE_ARCH_PTEP_SET_ACCESS_FLAGS
-	PAGE_SIZE;
+	rounddown_pow_of_two(4096);
 #else
+static unsigned long fault_around_bytes __read_mostly =
 	rounddown_pow_of_two(65536);
 #endif
 
@@ -4746,6 +4747,7 @@ int __handle_speculative_fault(struct mm_struct *mm, unsigned long address,
 			count_vm_event(SPECULATIVE_PGFAULT_FILE);
 		put_vma(vmf.vma);
 		*vma = NULL;
+		check_sync_rss_stat(current);
 	}
 
 	/*
@@ -4771,6 +4773,7 @@ out_segv:
 	 */
 	put_vma(vmf.vma);
 	*vma = NULL;
+	check_sync_rss_stat(current);
 	return VM_FAULT_SIGSEGV;
 }
 

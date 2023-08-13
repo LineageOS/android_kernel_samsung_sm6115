@@ -833,6 +833,7 @@ config PAGE_COUNTER
 
 config MEMCG
 	bool "Memory controller"
+	default y
 	select PAGE_COUNTER
 	select EVENTFD
 	help
@@ -841,6 +842,7 @@ config MEMCG
 config MEMCG_SWAP
 	bool "Swap controller"
 	depends on MEMCG && SWAP
+	default y
 	help
 	  Provides control over the swap space consumed by tasks in a cgroup.
 
@@ -857,6 +859,11 @@ config MEMCG_SWAP_ENABLED
 	  For those who want to have the feature enabled by default should
 	  select this option (if, for some reason, they need to disable it
 	  then swapaccount=0 does the trick).
+
+config MEMCG_FORCE_USE_VM_SWAPPINESS
+	bool "Force to use vm_swappiness instead of memcg->swappiness"
+	depends on MEMCG_SWAP
+	default y
 
 config MEMCG_KMEM
 	bool

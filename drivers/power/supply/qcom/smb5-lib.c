@@ -14,12 +14,27 @@
 #include <linux/pmic-voter.h>
 #include <linux/of_batterydata.h>
 #include <linux/ktime.h>
+/*EXTBPLM200703-01512,gudi.wt,20200707,let low power to shutdown*/
+#include <linux/reboot.h>
 #include "smb5-lib.h"
 #include "smb5-reg.h"
 #include "schgm-flash.h"
 #include "step-chg-jeita.h"
 #include "storm-watch.h"
 #include "schgm-flash.h"
+/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+#include <linux/afc/afc.h>
+#endif
+/* -Bug594012,gudi.wt,20201023,Bringup:Add for AFC, End --- */
+//+Bug594012,gudi.wt,20201023,Bringup:add period log
+#include <linux/moduleparam.h>
+#ifdef CONFIG_DISABLE_TEMP_PROTECT
+#include <linux/reboot.h>
+#endif
+
+extern struct smb_charger *wt_smbchip;
+//-Bug594012,gudi.wt,20201023,Bringup:add period log
 
 #define smblib_err(chg, fmt, ...)		\
 	pr_err("%s: %s: " fmt, chg->name,	\
@@ -341,7 +356,8 @@ static void smblib_notify_device_mode(struct smb_charger *chg, bool enable)
 	extcon_set_state_sync(chg->extcon, EXTCON_USB, enable);
 }
 
-static void smblib_notify_usb_host(struct smb_charger *chg, bool enable)
+//bug596217, guodandan@wt, 20201026, add usb control node,start
+void smblib_notify_usb_host(struct smb_charger *chg, bool enable)
 {
 	int rc = 0;
 
@@ -370,6 +386,35 @@ static void smblib_notify_usb_host(struct smb_charger *chg, bool enable)
 
 	extcon_set_state_sync(chg->extcon, EXTCON_USB_HOST, enable);
 }
+//bug596217, guodandan@wt, 20201026, add usb disable end
+
+//+  bug707503 tankaikun.wt,20220218, add, otg online conctrol
+void smblib_regulator_vbus_enable(struct smb_charger *chg, bool enable)
+{
+	int rc = 0;
+
+	if (enable) {
+		smblib_dbg(chg, PR_OTG, "enabling VBUS in OTG mode\n");
+		rc = smblib_masked_write(chg, DCDC_CMD_OTG_REG,
+					OTG_EN_BIT, OTG_EN_BIT);
+		if (rc < 0) {
+			smblib_err(chg,
+				"Couldn't enable VBUS in OTG mode rc=%d\n", rc);
+			return;
+		}
+	} else {
+		smblib_dbg(chg, PR_OTG, "disabling VBUS in OTG mode\n");
+		rc = smblib_masked_write(chg, DCDC_CMD_OTG_REG,
+					OTG_EN_BIT, 0);
+		if (rc < 0) {
+			smblib_err(chg,
+				"Couldn't disable VBUS in OTG mode rc=%d\n",
+				rc);
+			return;
+		}
+	}
+}
+//- bug707503 tankaikun.wt,20220218, add, otg online conctrol
 
 /********************
  * REGISTER GETTERS *
@@ -941,6 +986,69 @@ int smblib_get_qc3_main_icl_offset(struct smb_charger *chg, int *offset_ua)
 	return 0;
 }
 
+/*+Bug594012,gudi.wt,20201023,Bringup:[CW2017] Use soc of CW2017.*/
+#ifdef USING_CW2017_BATT
+int smblib_get_prop_from_bms(struct smb_charger *chg,
+				enum power_supply_property psp,
+				union power_supply_propval *val)
+{
+	int rc;
+
+	if((psp == POWER_SUPPLY_PROP_CAPACITY) ||
+		(psp == POWER_SUPPLY_PROP_TEMP) ||
+		(psp == POWER_SUPPLY_PROP_VOLTAGE_NOW)) {
+		/* +EXTB P200521-06425 caijiaqi.wt,20200814, Add, battery protect */
+		if (!chg->cw_battery_psy) {
+			chg->cw_battery_psy = power_supply_get_by_name("cw2017-bat");
+			return -EINVAL;
+		}
+		/* -EXTB P200521-06425 caijiaqi.wt,20200814, Add, battery protect */
+
+		rc = power_supply_get_property(chg->cw_battery_psy, psp, val);
+	} else {
+		if (!chg->bms_psy)
+			return -EINVAL;
+
+		rc = power_supply_get_property(chg->bms_psy, psp, val);
+	}
+	return rc;
+}
+
+int smblib_get_prop_from_bms_qg(struct smb_charger *chg,
+				enum power_supply_property psp,
+				union power_supply_propval *val)
+{
+	int rc;
+
+	if (!chg->bms_psy)
+		return -EINVAL;
+
+	rc = power_supply_get_property(chg->bms_psy, psp, val);
+
+	return rc;
+}
+
+/* +EXTB P200521-06425 caijiaqi.wt,20200814, Add, battery protect */
+#if defined(CONFIG_BATTERY_AGE_FORECAST)
+int smblib_set_prop_from_bms(struct smb_charger *chg,
+	enum power_supply_property psp, const union power_supply_propval *val)
+{
+	int rc = 0;
+
+	if(psp == POWER_SUPPLY_PROP_VOLTAGE_NOW) {
+		if (!chg->cw_battery_psy) {
+			chg->cw_battery_psy = power_supply_get_by_name("cw2017-bat");
+		}
+	}
+
+	if(chg->cw_battery_psy)
+		rc = power_supply_set_property(chg->cw_battery_psy, psp, val);
+
+	return rc;
+}
+/* -EXTB P200521-06425 caijiaqi.wt,20200814, Add, battery protect */
+#endif
+#else
 int smblib_get_prop_from_bms(struct smb_charger *chg,
 				enum power_supply_property psp,
 				union power_supply_propval *val)
@@ -954,6 +1062,26 @@ int smblib_get_prop_from_bms(struct smb_charger *chg,
 
 	return rc;
 }
+#endif
+/*-Bug594012,gudi.wt,20201023,Bringup:[CW2017] Use soc of CW2017.*/
+
+/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+void sec_bat_monitor_work(struct smb_charger *chg)
+{
+	const char *usb_icl_voter = NULL;
+	const char *fcc_voter = NULL;
+
+	usb_icl_voter = get_effective_client(chg->usb_icl_votable);
+	fcc_voter = get_effective_client(chg->fcc_votable);
+
+	pr_info("%s: cable_type:%d, usb_icl_votable(%s): %d, fcc_votable(%s): %d\n", __func__,
+		chg->real_charger_type,
+		usb_icl_voter ? usb_icl_voter : "None", get_effective_result(chg->usb_icl_votable),
+		fcc_voter ? fcc_voter : "None", get_effective_result(chg->fcc_votable));
+}
+#endif /* CONFIG_AFC */
+/* -Bug594012,gudi.wt,20201023,Bringup:Add for AFC, End --- */
 
 void smblib_apsd_enable(struct smb_charger *chg, bool enable)
 {
@@ -982,8 +1110,12 @@ void smblib_hvdcp_detect_enable(struct smb_charger *chg, bool enable)
 
 static void smblib_hvdcp_detect_try_enable(struct smb_charger *chg, bool enable)
 {
+//+Bug594012,gudi.wt,20201023,Bringup:optimization AFC func
+#ifndef CONFIG_AFC
 	if (chg->hvdcp_disable || chg->pd_not_supported)
 		return;
+#endif
+//-Bug594012,gudi.wt,20201023,Bringup:optimization AFC func
 	smblib_hvdcp_detect_enable(chg, enable);
 }
 
@@ -1084,6 +1216,15 @@ void smblib_rerun_apsd(struct smb_charger *chg)
 static const struct apsd_result *smblib_update_usb_type(struct smb_charger *chg)
 {
 	const struct apsd_result *apsd_result = smblib_get_apsd_result(chg);
+
+	/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+	if ((chg->real_charger_type == POWER_SUPPLY_TYPE_AFC) && (apsd_result->pst == POWER_SUPPLY_TYPE_USB_DCP)) {
+		pr_info("%s: Ignore DCP after AFC\n", __func__);
+		return apsd_result;
+	}
+#endif
+	/* -Bug594012,gudi.wt,20201023,Bringup:Add for AFC, End --- */
 
 	/* if PD is active, APSD is disabled so won't have a valid result */
 	if (chg->pd_active) {
@@ -1238,6 +1379,8 @@ static void smblib_uusb_removal(struct smb_charger *chg)
 	cancel_delayed_work_sync(&chg->usbov_dbc_work);
 	vote(chg->awake_votable, USBOV_DBC_VOTER, false, 0);
 	chg->dbc_usbov = false;
+	//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+	chg->chg_done = 0;
 
 	chg->voltage_min_uv = MICRO_5V;
 	chg->voltage_max_uv = MICRO_5V;
@@ -1292,6 +1435,11 @@ static void smblib_uusb_removal(struct smb_charger *chg)
 
 	chg->qc3p5_detected = false;
 	smblib_update_usb_type(chg);
+//+bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup,ato version control capacity max is 80%
+#ifdef WT_COMPILE_FACTORY_VERSION
+	vote(chg->usb_icl_votable, FACTORY_VOTER, false, 0);
+#endif
+//-bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup,ato version control capacity max is 80%
 }
 
 void smblib_suspend_on_debug_battery(struct smb_charger *chg)
@@ -1346,6 +1494,25 @@ static int smblib_get_pulse_cnt(struct smb_charger *chg, int *count)
 	return 0;
 }
 
+//+Bug594012,gudi.wt,20201023,Bringup:power off temp to limit current
+static int get_boot_mode(void)
+{
+	char *bootmode_string= NULL;
+	char bootmode_start[32] = " ";
+	int rc;
+
+	bootmode_string = strstr(saved_command_line,"androidboot.mode=");
+	if(bootmode_string != NULL){
+		strncpy(bootmode_start, bootmode_string+17, 7);
+		rc = strncmp(bootmode_start, "charger", 7);
+		if(rc == 0){
+			pr_err("Offcharger mode!\n");
+			return 1;
+		}
+	}
+	return 0;
+}
+//-Bug594012,gudi.wt,20201023,Bringup:power off temp to limit current
 #define USBIN_25MA	25000
 #define USBIN_100MA	100000
 #define USBIN_150MA	150000
@@ -1379,6 +1546,11 @@ static int set_sdp_current(struct smb_charger *chg, int icl_ua)
 	default:
 		return -EINVAL;
 	}
+
+	//+Bug594012,gudi.wt,20201023,Bringup:SS version ,LPM charge current set 500mA
+	if(get_boot_mode() && (icl_ua < USBIN_500MA))
+		icl_options = USB51_MODE_BIT;
+	//-Bug594012,gudi.wt,20201023,Bringup:SS version ,LPM charge current set 500mA
 
 	if (chg->real_charger_type == POWER_SUPPLY_TYPE_USB &&
 		apsd_result->pst == POWER_SUPPLY_TYPE_USB_FLOAT) {
@@ -1416,7 +1588,9 @@ int smblib_set_icl_current(struct smb_charger *chg, int icl_ua)
 	int rc = 0;
 	enum icl_override_mode icl_override = HW_AUTO_MODE;
 	/* suspend if 25mA or less is requested */
-	bool suspend = (icl_ua <= USBIN_25MA);
+	//+P210304-03671 xujianbang.wt,20210322,connect PC ,usb connect->disconnect->connect
+	bool suspend = (icl_ua <= 1000);   //USBIN_25MA
+	//-P210304-03671 xujianbang.wt,20210322,connect PC ,usb connect->disconnect->connect
 
 	if (chg->chg_param.smb_version == PMI632_SUBTYPE)
 		schgm_flash_torch_priority(chg, suspend ? TORCH_BOOST_MODE :
@@ -1444,6 +1618,11 @@ int smblib_set_icl_current(struct smb_charger *chg, int icl_ua)
 			goto out;
 		}
 	} else {
+		/* Bug594012,gudi.wt,20201023,Bringup:Add for disable temp test */
+	#ifdef CONFIG_DISABLE_TEMP_PROTECT
+		if (icl_ua < 1500000)
+			icl_ua = 1500000;
+	#endif /* CONFIG_DISABLE_TEMP_PROTECT */
 		/*
 		 * Try USB 2.0/3,0 option first on USB path when maximum input
 		 * current limit is 500mA or below for better accuracy; in case
@@ -1941,6 +2120,10 @@ int smblib_get_prop_batt_capacity(struct smb_charger *chg,
 {
 	int rc = -EINVAL;
 
+	/* +EXTB P220407-02580 taohuayi.wt,20220415,restrain soc  increase whe unpluged cable*/
+	int usb_present;
+	union power_supply_propval usb_pval;
+
 	if (chg->fake_capacity >= 0) {
 		val->intval = chg->fake_capacity;
 		return 0;
@@ -1948,8 +2131,54 @@ int smblib_get_prop_batt_capacity(struct smb_charger *chg,
 
 	rc = smblib_get_prop_from_bms(chg, POWER_SUPPLY_PROP_CAPACITY, val);
 
+	smblib_get_prop_usb_present(chg, &usb_pval);
+	usb_present = usb_pval.intval;
+	smblib_err(chg, "usb_present++: %d, pre_soc++ : %d, soc++: %d\n",
+						usb_present, chg->pre_soc, val->intval);
+	if ((chg->pre_soc  <  val->intval) && (usb_present  !=  true)) {   // usb are not present
+		smblib_err(chg, "usb not present: %d, pre_soc : %d, soc: %d\n",
+					usb_present, chg->pre_soc, rc);
+		val->intval = chg->pre_soc;
+	} else {
+		chg->pre_soc = val->intval;
+	}
+	/* -EXTB P220407-02580 taohuayi.wt,20220415,restrain soc  increase whe unpluged cable*/
+
 	return rc;
 }
+//+bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup,add SS-node store_mode node to control capacity
+#define	STORE_VOTER	"STORE_MODE_VOTER"
+int smblib_get_prop_store_mode(struct smb_charger *chg,
+				  union power_supply_propval *val)
+{
+	if(chg->store_mode != -EINVAL)
+		val->intval = chg->store_mode;
+	else
+		val->intval = 0;
+	return 0;
+}
+
+int smblib_set_prop_store_mode(struct smb_charger *chg,
+				  const union power_supply_propval *val)
+{
+	union power_supply_propval val_c = {0, };
+
+	chg->store_mode = val->intval;
+	//+when store_mode=1, fcc set 500mA
+	if(chg->store_mode == 0) {
+		vote(chg->usb_icl_votable, STORE_VOTER, false, 0);
+		vote(chg->fcc_votable, STORE_VOTER, false, 0);
+	}
+
+	smblib_get_prop_batt_capacity(chg, &val_c);
+	if((chg->store_mode == 1) && (val_c.intval >= 70))
+		vote(chg->usb_icl_votable, STORE_VOTER, true, 0);
+	if(chg->store_mode == 1)
+		vote(chg->fcc_votable, STORE_VOTER, true, 500000);
+	//-when store_mode=1, fcc set 500mA
+	return 0;
+}
+//-bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup,add SS-node store_mode node to control capacity
 
 static bool is_charging_paused(struct smb_charger *chg)
 {
@@ -2044,7 +2273,13 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 		 * charging path is un-suspended.
 		 */
 		if (pval.intval && !suspend) {
-			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+			//+Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+			if(chg->chg_done)
+				val->intval = POWER_SUPPLY_STATUS_FULL;
+			else
+				val->intval = POWER_SUPPLY_STATUS_CHARGING;
+			smblib_err(chg,"WT USBOV status = %d\n",val->intval);
+			//-Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
 			return 0;
 		}
 	}
@@ -2083,7 +2318,9 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 			break;
 		}
-		return rc;
+		//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+		//return rc;
+		goto out;
 	}
 
 	switch (stat) {
@@ -2108,7 +2345,9 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 
 	if (is_charging_paused(chg)) {
 		val->intval = POWER_SUPPLY_STATUS_CHARGING;
-		return 0;
+		//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+		//return 0;
+		goto out;
 	}
 
 	/*
@@ -2118,16 +2357,23 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 	if (is_client_vote_enabled_locked(chg->usb_icl_votable,
 						CHG_TERMINATION_VOTER)) {
 		val->intval = POWER_SUPPLY_STATUS_FULL;
-		return 0;
+		//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+		//return 0;
+		goto out;
 	}
 
-	if (val->intval != POWER_SUPPLY_STATUS_CHARGING)
-		return 0;
+	if (val->intval != POWER_SUPPLY_STATUS_CHARGING){
+		//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+		//return 0;
+		goto out;
+	}
 
 	if (!usb_online && dc_online
 		&& chg->fake_batt_status == POWER_SUPPLY_STATUS_FULL) {
 		val->intval = POWER_SUPPLY_STATUS_FULL;
-		return 0;
+		//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+		//return 0;
+		goto out;
 	}
 
 	rc = smblib_read(chg, BATTERY_CHARGER_STATUS_5_REG, &stat);
@@ -2142,6 +2388,24 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 
 	if (!stat)
 		val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+
+//+Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+out:
+/* +Bug594012,gudi.wt,20201023,Bringup:modify fv=4.1V,charge FULL status */
+	/* Bug594012,gudi.wt,20201023,Bringup:modify fv=4.1V,charge FULL status */
+	if (chg->wt_chg_done) {
+		val->intval = POWER_SUPPLY_STATUS_FULL;
+	} else if((val->intval == POWER_SUPPLY_STATUS_FULL)&&(!chg->chg_done)){
+		smblib_get_prop_batt_capacity(chg, &pval);
+		if(pval.intval != 100)
+			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+	}
+/* -Bug594012,gudi.wt,20201023,Bringup:modify fv=4.1V,charge FULL status */
+	if (chg->old_batt_status != val->intval){
+		smblib_err(chg, "WT batt_status  old=%d,new=%d\n",chg->old_batt_status,val->intval);
+		chg->old_batt_status = val->intval;
+	}
+//-Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
 
 	return 0;
 }
@@ -2213,6 +2477,8 @@ int smblib_get_prop_batt_health(struct smb_charger *chg,
 		}
 	}
 
+/*+ Bug594012,gudi.wt,20201023,Bringup:modify health for HW 10K R pull down to ground */
+#if 0
 	rc = smblib_read(chg, BATTERY_CHARGER_STATUS_7_REG, &stat);
 	if (rc < 0) {
 		smblib_err(chg, "Couldn't read BATTERY_CHARGER_STATUS_2 rc=%d\n",
@@ -2229,6 +2495,27 @@ int smblib_get_prop_batt_health(struct smb_charger *chg,
 		val->intval = POWER_SUPPLY_HEALTH_WARM;
 	else
 		val->intval = POWER_SUPPLY_HEALTH_GOOD;
+#else
+	rc = smblib_get_prop_from_bms(chg,
+			POWER_SUPPLY_PROP_TEMP, &pval);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't smblib_get_prop_from_bms temp rc=%d\n",
+			rc);
+		val->intval = POWER_SUPPLY_HEALTH_GOOD;
+		return rc;
+	}
+	if (pval.intval <= 0)
+		val->intval = POWER_SUPPLY_HEALTH_COLD;
+	else if (pval.intval >= 550)
+		val->intval = POWER_SUPPLY_HEALTH_OVERHEAT;
+	else if ((pval.intval > 0) && (pval.intval <= 50))
+		val->intval = POWER_SUPPLY_HEALTH_COOL;
+	else if ((pval.intval > 450) && (pval.intval < 550))
+		val->intval = POWER_SUPPLY_HEALTH_WARM;
+	else
+		val->intval = POWER_SUPPLY_HEALTH_GOOD;
+#endif
+/*- Bug594012,gudi.wt,20201023,Bringup:modify health for HW 10K R pull down to ground */
 
 done:
 	return rc;
@@ -2695,6 +2982,12 @@ int smblib_dp_dm(struct smb_charger *chg, int val)
 		if (rc < 0)
 			pr_err("Failed to force 9V\n");
 
+		/* +Bug594012,gudi.wt,20201023,Bringup: Add for AFC, Begin +++  */
+	#if defined(CONFIG_AFC)
+		schedule_delayed_work(&chg->compliant_check_work,
+					msecs_to_jiffies(2000));
+	#endif
+		/* -Bug594012,gudi.wt,20201023,Bringup: Add for AFC, End --- */
 		vote(chg->usb_icl_votable, HVDCP2_12V_ICL_VOTER, false, 0);
 		break;
 	case POWER_SUPPLY_DP_DM_FORCE_12V:
@@ -2744,10 +3037,14 @@ int smblib_disable_hw_jeita(struct smb_charger *chg, bool disable)
 	/*
 	 * Disable h/w base JEITA compensation if s/w JEITA is enabled
 	 */
+	/* +Bug594012,gudi.wt,20201023,Bringup:mofify jieta AFP JEITA_EN_AFP_HOT, JEITA_EN_AFP_COLF */
 	mask = JEITA_EN_COLD_SL_FCV_BIT
 		| JEITA_EN_HOT_SL_FCV_BIT
 		| JEITA_EN_HOT_SL_CCC_BIT
-		| JEITA_EN_COLD_SL_CCC_BIT,
+		| JEITA_EN_COLD_SL_CCC_BIT
+		| JEITA_EN_AFP_HOT
+		| JEITA_EN_AFP_COLF;
+	/* -Bug594012,gudi.wt,20201023,Bringup:mofify jieta AFP JEITA_EN_AFP_HOT, JEITA_EN_AFP_COLF */
 	rc = smblib_masked_write(chg, JEITA_EN_CFG_REG, mask,
 			disable ? 0 : mask);
 	if (rc < 0) {
@@ -2907,6 +3204,8 @@ static int smblib_process_thermal_readings(struct smb_charger *chg)
 	 * connector, smb or skin temp exceeds it's respective REG_H or REG_L
 	 * threshold. Unsuspend input and SMB.
 	 */
+	/* Bug594012,gudi.wt,20201023,Bringup: Modify for disable temp test */
+#ifndef CONFIG_DISABLE_TEMP_PROTECT
 	if (chg->connector_temp > CONNECTOR_TEMP_SHDN_THRESH ||
 		chg->skin_temp > SKIN_TEMP_SHDN_THRESH) {
 		thermal_status = TEMP_SHUT_DOWN;
@@ -2915,6 +3214,7 @@ static int smblib_process_thermal_readings(struct smb_charger *chg)
 		disable_smb = true;
 		goto out;
 	}
+#endif /* !CONFIG_DISABLE_TEMP_PROTECT */
 
 	if (chg->smb_temp > SMB_TEMP_SHDN_THRESH) {
 		thermal_status = TEMP_SHUT_DOWN_SMB;
@@ -3650,6 +3950,30 @@ int smblib_get_prop_charger_temp(struct smb_charger *chg,
 	return rc;
 }
 
+//+ Chk 109526 tankaikun.wt,20220218, add, battery temp test
+#define FAKE_BATTERY_TEMP 250
+int smblib_get_prop_batt_temp(struct smb_charger *chg,
+			      union power_supply_propval *val)
+{
+	int rc = -EINVAL;
+
+	if (chg->batt_temp_debug_flag == true) {
+		val->intval = chg->batt_debug_temp;
+		return 0;
+	}
+
+	rc = smblib_get_prop_from_bms(chg,
+				POWER_SUPPLY_PROP_TEMP, val);
+	if (rc < 0) {
+		val->intval = FAKE_BATTERY_TEMP;
+		smblib_err(chg, "Couldn't read battery temp,use fake battery temp,rc=%d\n",rc);
+		return 0;
+	}
+
+	return rc;
+}
+//- Chk 109526 tankaikun.wt,20220218, add, battery temp test
+
 int smblib_get_prop_typec_cc_orientation(struct smb_charger *chg,
 					 union power_supply_propval *val)
 {
@@ -3781,6 +4105,22 @@ inline int smblib_get_usb_prop_typec_mode(struct smb_charger *chg,
 	return 0;
 }
 
+//bug594012 , guoyan1@wt,add,20201102,add usb device mode check interface ,start
+int smblib_get_usb_mode (void)
+{
+	int typec_mode=0,usb_status=0;
+
+	if(wt_smbchip != NULL)
+		typec_mode = smblib_get_prop_typec_mode(wt_smbchip);
+
+	if(typec_mode >= POWER_SUPPLY_TYPEC_SOURCE_DEFAULT &&
+		typec_mode <= POWER_SUPPLY_TYPEC_SOURCE_HIGH)
+		usb_status = 1;
+
+	return usb_status;
+}
+EXPORT_SYMBOL(smblib_get_usb_mode);
+//bug548379 , guoyan1@wt,add,20201102,add usb device mode check interface,end
 int smblib_get_prop_typec_power_role(struct smb_charger *chg,
 				     union power_supply_propval *val)
 {
@@ -4295,8 +4635,9 @@ static int smblib_handle_usb_current(struct smb_charger *chg,
 				typec_mode = smblib_get_prop_typec_mode(chg);
 				rp_ua = get_rp_based_dcp_current(chg,
 								typec_mode);
+				//Bug536193,gudi.wt,20200508,P85943 set Non-standard charge current //rp_ua);
 				rc = vote(chg->usb_icl_votable,
-						SW_ICL_MAX_VOTER, true, rp_ua);
+						SW_ICL_MAX_VOTER, true, FLOAT_CURRENT_UA);
 				if (rc < 0)
 					return rc;
 			} else {
@@ -4740,6 +5081,27 @@ int smblib_set_prop_pd_in_hard_reset(struct smb_charger *chg,
 	return rc;
 }
 
+int smblib_set_prop_rechg_vbat_thresh(struct smb_charger *chg,
+				const union power_supply_propval *val)
+{
+	int rc;
+	u32 temp = VBAT_TO_VRAW_ADC(val->intval);
+
+	temp = ((temp & 0xFF00) >> 8) | ((temp & 0xFF) << 8);
+	rc = smblib_batch_write(chg,
+		CHGR_ADC_RECHARGE_THRESHOLD_MSB_REG, (u8 *)&temp, 2);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't write to ADC_RECHARGE_THRESHOLD REG rc=%d\n",
+				rc);
+		return rc;
+	}
+
+	chg->auto_recharge_vbat_mv = val->intval;
+	smblib_dbg(chg, PR_MISC, "[ss][%s]line=%d: auto_recharge_vbat_mv=%d, val->intval=%d\n",
+			__FUNCTION__, __LINE__, chg->auto_recharge_vbat_mv, val->intval);
+	return rc;
+}
+
 #define JEITA_SOFT			0
 #define JEITA_HARD			1
 static int smblib_update_jeita(struct smb_charger *chg, u32 *thresholds,
@@ -5107,6 +5469,10 @@ static void smblib_eval_chg_termination(struct smb_charger *chg, u8 batt_status)
 				&chg->chg_termination_alarm)) <= 0)) {
 		chg->cc_soc_ref = 0;
 		chg->last_cc_soc = 0;
+
+		//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+		chg->chg_done = 1;
+
 		chg->term_vbat_uv = 0;
 		alarm_start_relative(&chg->chg_termination_alarm,
 				ms_to_ktime(CHG_TERM_WA_ENTRY_DELAY_MS));
@@ -5120,6 +5486,19 @@ static void smblib_eval_chg_termination(struct smb_charger *chg, u8 batt_status)
 		chg->term_vbat_uv = 0;
 	}
 }
+
+//+Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+static void smblib_usbov_delay_report_work(struct work_struct *work)
+{
+	struct smb_charger *chg = container_of(work, struct smb_charger,
+						usbov_delay_report_work.work);
+
+	power_supply_changed(chg->batt_psy);
+	vote(chg->awake_votable, USBOV_DELAY_VOTER, false, 0);
+}
+
+#define DELAY_REPORT_PERIOD_MS 20
+//-Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
 
 irqreturn_t chg_state_change_irq_handler(int irq, void *data)
 {
@@ -5139,10 +5518,20 @@ irqreturn_t chg_state_change_irq_handler(int irq, void *data)
 
 	stat = stat & BATTERY_CHARGER_STATUS_MASK;
 
+	/* +Bug594012,gudi.wt,20201023,Bringup:reduce repeated chargingtemp, in temp 1-5 test */
+	if(stat == TERMINATE_CHARGE) {
+		chg->wt_chg_done = true;
+	}
+	/* -Bug594012,gudi.wt,20201023,Bringup:reduce repeated chargingtemp, in temp 1-5 test */
 	if (chg->wa_flags & CHG_TERMINATION_WA)
 		smblib_eval_chg_termination(chg, stat);
 
-	power_supply_changed(chg->batt_psy);
+	//+Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+	//power_supply_changed(chg->batt_psy);
+	vote(chg->awake_votable, USBOV_DELAY_VOTER, true, 0);
+	schedule_delayed_work(&chg->usbov_delay_report_work,
+			msecs_to_jiffies(DELAY_REPORT_PERIOD_MS));
+	//-Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
 	return IRQ_HANDLED;
 }
 
@@ -5548,6 +5937,9 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 		if (rc < 0)
 			smblib_err(chg, "Couldn't to enable DPDM rc=%d\n", rc);
 
+//Bug594012,gudi.wt,20201023,Bringup:bringup,add period log ,awake vote
+		vote(chg->awake_votable, CHG_INSERT_VOTER, true, 0);
+
 		/* Enable SW Thermal regulation */
 		rc = smblib_set_sw_thermal_regulation(chg, true);
 		if (rc < 0)
@@ -5563,6 +5955,12 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 		schedule_delayed_work(&chg->pl_enable_work,
 					msecs_to_jiffies(PL_DELAY_MS));
 	} else {
+		/* +Bug594012,gudi.wt,20201023,Bringup: Add for AFC, Begin +++  */
+	#if defined(CONFIG_AFC)
+		detach_afc(); //related with afc driver
+	#endif
+		/* -Bug594012,gudi.wt,20201023,Bringup: Add for AFC, End --- */
+
 		/* Disable SW Thermal Regulation */
 		rc = smblib_set_sw_thermal_regulation(chg, false);
 		if (rc < 0)
@@ -5628,6 +6026,16 @@ void smblib_usb_plugin_locked(struct smb_charger *chg)
 						!vbus_rising, 0);
 
 	power_supply_changed(chg->usb_psy);
+//+Bug594012,gudi.wt,20201023,Bringup:add period log ,awake vote
+	if (!vbus_rising) {
+		vote(chg->awake_votable, CHG_INSERT_VOTER, false, 0);
+//+Bug594012,gudi.wt,20201023,Bringup:bringup,add afc_flag node
+#if defined(CONFIG_AFC)
+		chg->afc_flag = 0;
+#endif
+//-Bug594012,gudi.wt,20201023,Bringup:bringup,add afc_flag node
+	}
+//-Bug594012,gudi.wt,20201023,Bringup:add period log ,awake vote
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: usbin-plugin %s\n",
 					vbus_rising ? "attached" : "detached");
 }
@@ -5761,6 +6169,11 @@ static void update_sw_icl_max(struct smb_charger *chg, int pst)
 	 * HVDCP 2/3, handled separately
 	 */
 	if (pst == POWER_SUPPLY_TYPE_USB_HVDCP
+		/* +Bug594012,gudi.wt,20201023,Bringup: Add for AFC, Begin +++  */
+		#if defined(CONFIG_AFC)
+			|| (chg->real_charger_type == POWER_SUPPLY_TYPE_AFC)
+		#endif
+		/* -Bug594012,gudi.wt,20201023,Bringup: Add for AFC, End --- */
 			|| pst == POWER_SUPPLY_TYPE_USB_HVDCP_3)
 		return;
 
@@ -5781,6 +6194,11 @@ static void update_sw_icl_max(struct smb_charger *chg, int pst)
 		 */
 		if (!is_client_vote_enabled(chg->usb_icl_votable,
 						USB_PSY_VOTER)) {
+			//+Bug594012,gudi.wt,20201023,Bringup:SS version ,LPM charge current set 500mA
+			if(get_boot_mode())
+				vote(chg->usb_icl_votable, USB_PSY_VOTER, true, USBIN_500MA);
+			else
+			//-Bug594012,gudi.wt,20201023,Bringup:SS version ,LPM charge current set 500mA
 			/* if flash is active force 500mA */
 			vote(chg->usb_icl_votable, USB_PSY_VOTER, true,
 					is_flash_active(chg) ?
@@ -5801,8 +6219,9 @@ static void update_sw_icl_max(struct smb_charger *chg, int pst)
 		 * limit ICL to 100mA, the USB driver will enumerate to check
 		 * if this is a SDP and appropriately set the current
 		 */
-		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
-					SDP_100_MA);
+//+bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup,float charger, charger current is not right
+		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true, FLOAT_CURRENT_UA);
+//-bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup,float charger, charger current is not right
 		break;
 	case POWER_SUPPLY_TYPE_UNKNOWN:
 	default:
@@ -5815,6 +6234,11 @@ static void update_sw_icl_max(struct smb_charger *chg, int pst)
 static void smblib_handle_apsd_done(struct smb_charger *chg, bool rising)
 {
 	const struct apsd_result *apsd_result;
+	/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+	int typec_mode = 0, rc = 0;
+#endif
+	/* -Bug594012,gudi.wt,20201023,Bringup:Add for AFC, End --- */
 
 	if (!rising)
 		return;
@@ -5837,6 +6261,30 @@ static void smblib_handle_apsd_done(struct smb_charger *chg, bool rising)
 		break;
 	}
 
+	/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+	typec_mode = smblib_get_prop_typec_mode(chg);
+
+	if (apsd_result->bit == DCP_CHARGER_BIT && typec_mode == POWER_SUPPLY_TYPEC_SOURCE_DEFAULT) {
+		if ((chg->afc_sts == AFC_INIT) && (!chg->hv_disable)) {
+			vote(chg->usb_icl_votable, SEC_BATTERY_AFC_VOTER, true, 500000);   /* 500mA for AFC communication  */
+			/* AFC function call */
+			smblib_dbg(chg, PR_MISC, "Start AFC!!!\n");
+			rc =  smblib_write(chg, 0x1360/*USBIN_ADAPTER_ALLOW_CFG_REG*/, 0x8/*USBIN_ADAPTER_ALLOW_5V_TO_9V*/);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't set USBIN_ADAPTER_ALLOW_5V_TO_9V rc=%d\n", rc);
+			afc_set_voltage(SET_9V);
+		} else {
+			vote(chg->usb_icl_votable, SEC_BATTERY_AFC_VOTER, false, 0);   /* 500mA for AFC communication  */
+			pr_err("%s: Do not start AFC, afc_sts(%d), hv_disable(%d)\n",
+					__func__, chg->afc_sts, chg->hv_disable);
+			/* afc_sts enum
+			 * AFC_INIT = 0, NOT_AFC = 1, AFC_FAIL = 2, AFC_DISABLE = 3 */
+		}
+	}
+#endif
+	/* -Bug594012,gudi.wt,20201023,Bringup:Add for AFC, End --- */
+
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: apsd-done rising; %s detected\n",
 		   apsd_result->name);
 }
@@ -5848,9 +6296,30 @@ irqreturn_t usb_source_change_irq_handler(int irq, void *data)
 	int rc = 0;
 	u8 stat;
 
+//EXTB PLM P190725-07320 gudi.wt,add,20200415, taking 3-4 sec to connect charger
+	u8 stat2 = 0;
+
 	/* PD session is ongoing, ignore BC1.2 and QC detection */
 	if (chg->pd_active)
 		return IRQ_HANDLED;
+
+//+EXTB PLM P190725-07320 gudi.wt,add,20200415, taking 3-4 sec to connect charger
+	rc = smblib_read(chg, APSD_RESULT_STATUS_REG, &stat2);
+	smblib_err(chg, "WT APSD_RESULT_STATUS_REG = 0x%02x\n", stat2);
+	/*SDP or DCP*/
+	if((stat2 & SDP_CHARGER_BIT)||(stat2 & DCP_CHARGER_BIT)){
+		smblib_update_usb_type(chg);
+		power_supply_changed(chg->usb_psy);
+		smblib_err(chg, "WT APSD power supply \n");
+	}
+	if((chg->connector_type == POWER_SUPPLY_CONNECTOR_TYPEC)
+		&& (!chg->uusb_apsd_rerun_done) && (!(stat2 & DCP_CHARGER_BIT))){
+		chg->uusb_apsd_rerun_done = true;
+		smblib_rerun_apsd_if_required(chg);
+		smblib_err(chg, "WT TYPEC rerun APSD\n");
+		return IRQ_HANDLED;
+	}
+//-EXTB PLM P190725-07320 gudi.wt,add,20200415, taking 3-4 sec to connect charger
 
 	rc = smblib_read(chg, APSD_STATUS_REG, &stat);
 	if (rc < 0) {
@@ -6043,9 +6512,12 @@ static void typec_src_insertion(struct smb_charger *chg)
 	chg->ok_to_pd = (!(chg->typec_legacy || chg->pd_disabled)
 			|| chg->early_usb_attach) && !chg->pd_not_supported;
 
+	/* Bug594012,gudi.wt,20201023,Bringup:Add for AFC */
+#if !defined(CONFIG_AFC)
 	/* allow apsd proceed to detect QC2/3 */
 	if (!chg->ok_to_pd)
 		smblib_hvdcp_detect_try_enable(chg, true);
+#endif /* !CONFIG_AFC */
 }
 
 static void typec_ra_ra_insertion(struct smb_charger *chg)
@@ -6233,6 +6705,15 @@ static void typec_src_removal(struct smb_charger *chg)
 	smblib_hvdcp_detect_try_enable(chg, false);
 	smblib_update_usb_type(chg);
 
+	/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+	smblib_hvdcp_detect_enable(chg, false);
+	chg->afc_sts = AFC_INIT;
+	vote(chg->usb_icl_votable, SEC_BATTERY_AFC_VOTER, false, 0);
+	vote(chg->fcc_votable, SEC_BATTERY_AFC_VOTER, false, 0);
+#endif
+	/* -Bug594012,gudi.wt,20201023,Bringup:Add for AFC, End --- */
+
 	if (chg->wa_flags & BOOST_BACK_WA) {
 		data = chg->irq_info[SWITCHER_POWER_OK_IRQ].irq_data;
 		if (data) {
@@ -6245,6 +6726,11 @@ static void typec_src_removal(struct smb_charger *chg)
 	}
 
 	cancel_delayed_work_sync(&chg->pl_enable_work);
+	/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+	cancel_delayed_work_sync(&chg->compliant_check_work);
+#endif
+	/* -Bug594012,gudi.wt,20201023,Bringup:Add for AFC, End --- */
 
 	/* reset input current limit voters */
 	vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
@@ -6260,6 +6746,21 @@ static void typec_src_removal(struct smb_charger *chg)
 	vote(chg->usb_icl_votable, THERMAL_THROTTLE_VOTER, false, 0);
 	vote(chg->usb_icl_votable, LPD_VOTER, false, 0);
 
+	/* +Bug594012,gudi.wt,20201023,Bringup:[CW2017]use CW temp control fcc fv */
+	vote(chg->fcc_votable, BATT_TEMP_VOTER, false, 0);
+	vote(chg->fv_votable, BATT_TEMP_VOTER,  false , 0);
+	chg->last_bat_current = -22;
+	chg->last_bat_fv = 0;
+	/* -Bug594012,gudi.wt,20201023,Bringup:[CW2017]use CW temp control fcc fv */
+	/* Bug594012,gudi.wt,20201023,Bringup:modify when cw-capacity 100,when qg-capacity >=99 */
+	chg->cap_100_flag = false;
+	/* +Bug594012,gudi.wt,20201023,Bringup:let low power test captical descend soon */
+	#ifdef CONFIG_DISABLE_TEMP_PROTECT
+	chg->low_temp_cap_flag = 0;
+	#endif
+	/* -Bug594012,gudi.wt,20201023,Bringup:let low power test captical descend soon */
+	/* Bug594012,gudi.wt,20201023,Bringup:reduce repeated chargingtemp, in temp 1-5 test */
+	chg->wt_chg_done = false;
 	/* reset usb irq voters */
 	vote(chg->limited_irq_disable_votable, CHARGER_TYPE_VOTER,
 			true, 0);
@@ -6285,6 +6786,8 @@ static void typec_src_removal(struct smb_charger *chg)
 	cancel_delayed_work_sync(&chg->usbov_dbc_work);
 	vote(chg->awake_votable, USBOV_DBC_VOTER, false, 0);
 	chg->dbc_usbov = false;
+	//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+	chg->chg_done = 0;
 
 	chg->pulse_cnt = 0;
 	chg->usb_icl_delta_ua = 0;
@@ -6362,6 +6865,14 @@ static void typec_src_removal(struct smb_charger *chg)
 
 	del_timer_sync(&chg->apsd_timer);
 	chg->apsd_ext_timeout = false;
+
+//EXTB PLM P190725-07320 gudi.wt,add,20200415, taking 3-4 sec to connect charger
+	chg->uusb_apsd_rerun_done = false;
+//+bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup modifiy ato version control capacity max is 80%
+	#ifdef WT_COMPILE_FACTORY_VERSION
+	vote(chg->usb_icl_votable, FACTORY_VOTER, false, 0);
+	#endif
+//-bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup modifiy ato version control capacity max is 80%
 }
 
 static void typec_mode_unattached(struct smb_charger *chg)
@@ -6469,11 +6980,32 @@ irqreturn_t typec_state_change_irq_handler(int irq, void *data)
 	struct smb_charger *chg = irq_data->parent_data;
 	int typec_mode;
 
+	//bug596217, guodandan@wt, 20201026, add usb control node, start
+	#ifdef CONFIG_USB_NOTIFIER
+	u8 stat;
+	int rc;
+	#endif
+	//bug596217, guodandan@wt, 20201026, add usb control node, end
+
 	if (chg->connector_type == POWER_SUPPLY_CONNECTOR_MICRO_USB) {
 		smblib_dbg(chg, PR_INTERRUPT,
 				"Ignoring for micro USB\n");
 		return IRQ_HANDLED;
 	}
+
+	//bug596217, guodandan@wt, 20201026, add usb control node, start
+	#ifdef CONFIG_USB_NOTIFIER
+	rc = smblib_read(chg, TYPE_C_MISC_STATUS_REG, &stat);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't read TYPE_C_MISC_STATUS_REG rc=%d\n",
+			rc);
+		return IRQ_HANDLED;
+	}
+
+	if (stat & SNK_SRC_MODE_BIT)
+		return IRQ_HANDLED;
+	#endif
+	//bug596217, guodandan@wt, 20201026, add usb control node, end
 
 	typec_mode = smblib_get_prop_typec_mode(chg);
 	if (chg->sink_src_mode != UNATTACHED_MODE
@@ -6522,6 +7054,10 @@ irqreturn_t typec_attach_detach_irq_handler(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
+	#ifdef CONFIG_USB_NOTIFIER
+	chg->otg_block = 0;		//bug596217, guodandan@wt, 20201026, add usb control node, add
+	#endif
+
 	attached = !!(stat & TYPEC_ATTACH_DETACH_STATE_BIT);
 
 	if (attached) {
@@ -6539,6 +7075,14 @@ irqreturn_t typec_attach_detach_irq_handler(int irq, void *data)
 			chg->sink_src_mode = AUDIO_ACCESS_MODE;
 			typec_ra_ra_insertion(chg);
 		} else if (stat & SNK_SRC_MODE_BIT) {
+			//bug596217, guodandan@wt, 20201026, add usb control node, start
+			#ifdef CONFIG_USB_NOTIFIER
+			if(chg->usb_psy->usb_host_flag) {
+				chg->otg_block = 1;
+				return IRQ_HANDLED;
+			}
+			#endif
+			//bug596217, guodandan@wt, 20201026, add usb control node, end
 			if (smblib_src_lpd(chg))
 				return IRQ_HANDLED;
 			chg->sink_src_mode = SRC_MODE;
@@ -6564,6 +7108,14 @@ irqreturn_t typec_attach_detach_irq_handler(int irq, void *data)
 		case UNATTACHED_MODE:
 		default:
 			typec_mode_unattached(chg);
+			//bug596217, guodandan@wt, 20201026, add usb control node, start
+			#ifdef CONFIG_USB_NOTIFIER
+			typec_src_removal(chg);
+			smblib_notify_usb_host(chg, 0);
+			power_supply_changed(chg->usb_psy);
+			#endif
+			//bug596217, guodandan@wt, 20201026, add usb control node, end
+
 			break;
 		}
 
@@ -7091,7 +7643,9 @@ irqreturn_t usbin_ov_irq_handler(int irq, void *data)
 	 * differentiate between OV IRQ glitch and real OV_IRQ, add a debounce
 	 * period for evaluation.
 	 */
-	if (stat & USBIN_OV_RT_STS_BIT) {
+//+Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+#if 0
+	if (stat & USBIN_OV_RT_STS_BIT || chg->dbc_usbov == false) {
 		chg->dbc_usbov = true;
 		vote(chg->awake_votable, USBOV_DBC_VOTER, true, 0);
 		schedule_delayed_work(&chg->usbov_dbc_work,
@@ -7101,6 +7655,15 @@ irqreturn_t usbin_ov_irq_handler(int irq, void *data)
 		chg->dbc_usbov = false;
 		vote(chg->awake_votable, USBOV_DBC_VOTER, false, 0);
 	}
+#else
+	chg->dbc_usbov = true;
+	vote(chg->awake_votable, USBOV_DBC_VOTER, true, 0);
+	/*Should reset for double triggred*/
+	cancel_delayed_work_sync(&chg->usbov_dbc_work);
+	schedule_delayed_work(&chg->usbov_dbc_work,
+			msecs_to_jiffies(USB_OV_DBC_PERIOD_MS));
+#endif
+//-Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
 
 	smblib_dbg(chg, PR_MISC, "USBOV debounce status %d\n",
 				chg->dbc_usbov);
@@ -7380,11 +7943,607 @@ static void smblib_thermal_regulation_work(struct work_struct *work)
 		smblib_err(chg, "Couldn't read current thermal values %d\n",
 					rc);
 
+	/* Bug594012,gudi.wt,20201023,Bringup:Add for disable temp test */
+#ifdef CONFIG_DISABLE_TEMP_PROTECT
+	return ;
+#endif /* CONFIG_DISABLE_TEMP_PROTECT */
+
 	rc = smblib_process_thermal_readings(chg);
 	if (rc < 0)
 		smblib_err(chg, "Couldn't run sw thermal regulation %d\n",
 					rc);
 }
+
+//+Bug594012,gudi.wt,20201023,Bringup:add period log
+static int period_ms;
+static int smb_period_ms_set(const char *val, const struct kernel_param *kp)
+{
+	int ret;
+
+	ret = param_set_int(val, kp);
+	if (ret) {
+		pr_err("error setting value %d\n", ret);
+		return ret;
+	}
+	if (wt_smbchip) {
+		pr_info("set_period_ms to %d\n", period_ms);
+		cancel_delayed_work_sync(&wt_smbchip->period_update_work);
+		schedule_delayed_work(&wt_smbchip->period_update_work,
+					  round_jiffies_relative(msecs_to_jiffies
+								 (period_ms)));
+		return 0;
+	}
+	return -EINVAL;
+}
+
+static struct kernel_param_ops smb_period_ops = {
+	.set = smb_period_ms_set,
+	.get = param_get_int,
+};
+/*new function in new andriod version*/
+module_param_cb(period_ms, &smb_period_ops, &period_ms, 0644);
+
+/*WT: add battery capacity set in range*/
+static int sales_code_is(void){
+
+	return 0;
+}
+
+/* +EXTB P200521-06425 caijiaqi.wt,20200814, Add, battery protect */
+#if defined(CONFIG_BATTERY_AGE_FORECAST)
+int wt_set_batt_cycle_fv(struct smb_charger *chg,
+	const union power_supply_propval *val) {
+	int i,cycle;
+
+	if(val->intval >= 0 && val->intval < 999999)
+		chg->batt_cycle = val->intval;
+	else
+		return -EINVAL;
+
+	cycle = chg->batt_cycle;
+	if(chg->batt_cycle_fv_cfg && chg->fv_levels) {
+		for(i = 0; i < chg->fv_levels; i=i+3) {
+			/* -EXTB P200521-06425 caijiaqi.wt,20200820, Add, battery protect */
+			if((cycle >= chg->batt_cycle_fv_cfg[i]) && (cycle <= chg->batt_cycle_fv_cfg[i+1])) {
+				vote(chg->fv_votable, BATT_CYCLE_VOTER, true, chg->batt_cycle_fv_cfg[i+2]);
+				pr_info("WT set fv = %d\n", chg->batt_cycle_fv_cfg[i+2]);
+				return 0;
+			}
+		}
+	} else {
+		vote(chg->fv_votable, BATT_CYCLE_VOTER, false, 0);
+	}
+	return 0;
+}
+#endif
+/* -EXTB P200521-06425 caijiaqi.wt,20200814, Add, battery protect */
+
+//+bug536193,P85973,gudi.wt,20200602,FC:[CW2017]use CW temp control fcc fv
+#define BATT_5_FCC	2100000
+#define BATT_12_FCC	2100000
+#define BATT_45_FCC	3000000
+#define BATT_55_FCC	3000000
+#define BATT_COLD_HOT_FCC	0
+
+#define BATT_COLD_HOT_FV    4100000
+#define BATT_NORMAL_FV   4400000
+//bug536193 gudi.wt,MODIFIY,2020617 limit lcd on current 1.55
+#define LCD_ONCURRENT 1550000
+
+//+bug536193 gudi.wt,MODIFIY,2020420,P85943 limit lcd on current
+bool usbchg_lcd_is_on = 0;
+void batt_temp_charging_current(struct smb_charger *chg, int bat_temp)
+{
+	int bat_current = 0;
+	int bat_fv = 0;
+	/* bug536193,gudi.wt,20200807,modify fv=4.1V,charge FULL status */
+	int disable_chg_flag = 0;
+
+	if (usbchg_lcd_is_on) {
+		if (bat_temp <= 0) {
+			bat_current = BATT_COLD_HOT_FCC;
+			bat_fv = BATT_COLD_HOT_FV;
+			/* bug536193,gudi.wt,20200807,modify fv=4.1V,charge FULL status */
+			disable_chg_flag = 1;
+		} else if (0 < bat_temp && bat_temp <= 50) {
+			bat_current = LCD_ONCURRENT;
+			bat_fv = BATT_COLD_HOT_FV;
+			/* +bug568048,gudi.wt,20200714,reduce repeated chargingtemp, in temp 1-5 test */
+			if(chg->wt_chg_done == true) {
+				bat_current = 0;
+			}
+			/* -bug568048,gudi.wt,20200714,reduce repeated chargingtemp, in temp 1-5 test */
+		} else if (50 < bat_temp && bat_temp <= 120 ) {
+			bat_current = LCD_ONCURRENT;
+			bat_fv = BATT_NORMAL_FV;
+		} else if (120 < bat_temp && bat_temp <= 450) {
+			bat_current = LCD_ONCURRENT;
+			bat_fv = BATT_NORMAL_FV;
+		} else if (450 < bat_temp && bat_temp < 550) {
+			bat_current = LCD_ONCURRENT;
+			bat_fv = BATT_COLD_HOT_FV;
+			/* +bug568048,gudi.wt,20200714,reduce repeated chargingtemp, in temp 1-5 test */
+			if(chg->wt_chg_done == true) {
+				bat_current = 0;
+			}
+			/* -bug568048,gudi.wt,20200714,reduce repeated chargingtemp, in temp 1-5 test */
+		} else {
+			bat_current = BATT_COLD_HOT_FCC;
+			bat_fv = BATT_COLD_HOT_FV;
+			/* bug536193,gudi.wt,20200807,modify fv=4.1V,charge FULL status */
+			disable_chg_flag = 1;
+		}
+	} else {
+		if (bat_temp <= 0) {
+			bat_current = BATT_COLD_HOT_FCC;
+			bat_fv = BATT_COLD_HOT_FV;
+			/* bug536193,gudi.wt,20200807,modify fv=4.1V,charge FULL status */
+			disable_chg_flag = 1;
+		} else if (0 < bat_temp && bat_temp <= 50) {
+			bat_current = BATT_5_FCC;
+			bat_fv = BATT_COLD_HOT_FV;
+			/* +bug568048,gudi.wt,20200714,reduce repeated chargingtemp, in temp 1-5 test */
+			if(chg->wt_chg_done == true) {
+				bat_current = 0;
+			}
+			/* -bug568048,gudi.wt,20200714,reduce repeated chargingtemp, in temp 1-5 test */
+		} else if (50 < bat_temp && bat_temp <= 120 ) {
+			bat_current = BATT_12_FCC;
+			bat_fv = BATT_NORMAL_FV;
+		} else if (120 < bat_temp && bat_temp <= 450) {
+			bat_current = BATT_45_FCC;
+			bat_fv = BATT_NORMAL_FV;
+		} else if (450 < bat_temp && bat_temp < 550) {
+			bat_current = BATT_55_FCC;
+			bat_fv = BATT_COLD_HOT_FV;
+			/* +bug568048,gudi.wt,20200714,reduce repeated chargingtemp, in temp 1-5 test */
+			if(chg->wt_chg_done == true) {
+				bat_current = 0;
+			}
+			/* -bug568048,gudi.wt,20200714,reduce repeated chargingtemp, in temp 1-5 test */
+		} else {
+			bat_current = BATT_COLD_HOT_FCC;
+			bat_fv = BATT_COLD_HOT_FV;
+			/* bug536193,gudi.wt,20200807,modify fv=4.1V,charge FULL status */
+			disable_chg_flag = 1;
+		}
+	}
+	/* +bug536193,gudi.wt,20200807,modify fv=4.1V,charge FULL status */
+	if (disable_chg_flag)
+		vote(chg->chg_disable_votable, BATT_TEMP_VOTER, true, 0);
+	else
+		vote(chg->chg_disable_votable, BATT_TEMP_VOTER, false, 0);
+	/* -bug536193,gudi.wt,20200807,modify fv=4.1V,charge FULL status */
+
+	if ((bat_current != chg->last_bat_current) || (bat_fv != chg->last_bat_fv)) {
+		pr_err("bat_current = %d,bat_fv = %d,lcd_is_on = %d,bat_temp = %d,last_bat_current = %d,last_bat_fv = %d\n",
+				bat_current,bat_fv, usbchg_lcd_is_on, bat_temp, chg->last_bat_current,chg->last_bat_fv);
+		vote(chg->fcc_votable, BATT_TEMP_VOTER, true, bat_current);
+		vote(chg->fv_votable, BATT_TEMP_VOTER,  true, bat_fv);
+		chg->last_bat_current = bat_current;
+		chg->last_bat_fv = bat_fv;
+	}
+}
+//-bug536193 gudi.wt,MODIFIY,2020420,P85943 limit lcd on current
+//-bug536193,P85973,gudi.wt,20200602,FC:[CW2017]use CW temp control fcc fv
+
+//+Bug536193 gudi.wt,ADD,20200556,P85943 without adaptor plug into device,device show charging
+//+Bug536193 gudi.wt,ADD,20200817,P85943 modify threshold without adaptor plug into device,device show charging
+#define  WT_ARB_VBUS_UV_THRESHOLD 4200
+#define  WT_ARB_VBUS_UV_MIN_THRESHOLD 3800
+#define  WT_ARB_IBUS_UA_THRESHOLD 100
+//-Bug536193 gudi.wt,ADD,20200817,P85943 modify threshold without  adaptor plug into device,device show charging
+//-Bug536193 gudi.wt,ADD,20200556,P85943 without adaptor plug into device,device show charging
+#define LOW_SOC_HEARTBEAT_MS	20000
+#define HEARTBEAT_MS	60000
+/* +EXTBPLM200703-01512,gudi.wt,20200707,let low power to shutdown */
+#define LOW_BATT_SHUTDOWN	3250
+#define LOW_CAP_SHUTDOWN	2
+/* -EXTBPLM200703-01512,gudi.wt,20200707,let low power to shutdown */
+static void period_update(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct smb_charger *chip = container_of(dwork,
+				struct smb_charger, period_update_work);
+	union power_supply_propval val = {0, };
+
+	int period = 500,rc = 0,icurrent = 0;
+	int temp, v_batt, c_batt, cap, status, charge_type, batt_p, usb_p;
+	int store_mode, online, hv_charger_status, batt_current_event, batt_slate_mode;
+	int batt_misc_event, new_charge_type, batt_current_ua_now;
+	static int old_temp = 0, old_cap = 0, old_status = 0;
+//Bug 536193 gudi.wt,MODIFIY,20200421,P85943,power off temp to limit current
+	static int flag_wt = 3000000;
+	//bug536193 gudi.wt,MODIFIY,2020716,P85943 for recharger
+	static int recharger_num_flag = 0;
+
+	/* EXTBPLM200703-01512,gudi.wt,20200707,let low power to shutdown */
+	static int power_off_flag = 0;
+/*+bug545827,xujianbang.wt,20200409,FC:[CW2017] Use soc of CW2017.*/
+#ifdef USING_CW2017_BATT
+	int temp_1, cap_1, v_batt_1;
+#endif
+/*-bug545827,xujianbang.wt,20200409,FC:[CW2017] Use soc of CW2017.*/
+
+	static int old_present = 0, old_usb_present = 0;
+	static int printk_counter = 0,usb_v=0;
+
+	if (chip == NULL) {
+		pr_err("period_update pmic fatal error, chip was NULL!!!\n");
+		return;
+	}
+
+	/*WT: add customer node logger for test begin*/
+	rc = power_supply_get_property(chip->batt_psy,
+                        POWER_SUPPLY_PROP_STORE_MODE, &val);
+	store_mode = val.intval;
+	rc = power_supply_get_property(chip->batt_psy,
+                        POWER_SUPPLY_PROP_ONLINE, &val);
+	online = val.intval;
+	rc = power_supply_get_property(chip->batt_psy,
+                        POWER_SUPPLY_PROP_HV_CHARGER_STATUS, &val);
+	hv_charger_status = val.intval;
+	rc = power_supply_get_property(chip->batt_psy,
+                        POWER_SUPPLY_PROP_BATT_CURRENT_EVENT, &val);
+	batt_current_event = val.intval;
+	rc = power_supply_get_property(chip->batt_psy,
+                        POWER_SUPPLY_PROP_BATT_SLATE_MODE, &val);
+	batt_slate_mode = val.intval;
+	rc = power_supply_get_property(chip->batt_psy,
+                        POWER_SUPPLY_PROP_BATT_MISC_EVENT, &val);
+	batt_misc_event = val.intval;
+	rc = power_supply_get_property(chip->batt_psy,
+                        POWER_SUPPLY_PROP_NEW_CHARGE_TYPE, &val);
+	new_charge_type = val.intval;
+	rc = power_supply_get_property(chip->batt_psy,
+                        POWER_SUPPLY_PROP_BATT_CURRENT_UA_NOW, &val);
+	batt_current_ua_now = val.intval;
+
+	pr_err("***store_mode=%d,online=%d,hv_charger_status=%d,batt_current_event=%d,batt_slate_mode=%d,batt_misc_event=%d,new_charge_type=%d,batt_current_ua_now=%d\n",
+                                                store_mode,online,hv_charger_status,batt_current_event,batt_slate_mode,batt_misc_event,new_charge_type,batt_current_ua_now);
+	/*WT: add customer node logger for test end*/
+
+	rc = smblib_get_prop_from_bms(chip,
+			POWER_SUPPLY_PROP_VOLTAGE_NOW, &val);
+	v_batt = val.intval / 1000;
+	//+ Chk 109526 tankaikun.wt,20220218,modify, battery temp test
+	//rc = smblib_get_prop_from_bms(chip,
+	//		POWER_SUPPLY_PROP_TEMP, &val);
+	smblib_get_prop_batt_temp(chip, &val);
+	temp = val.intval;
+	//- Chk 109526 tankaikun.wt,20220218, modify, battery temp test
+	rc = smblib_get_prop_from_bms(chip,
+			POWER_SUPPLY_PROP_CURRENT_NOW, &val);
+	c_batt = val.intval / 1000;
+	smblib_get_prop_usb_current_now(chip, &val);
+	icurrent = val.intval/1000;
+	smblib_get_prop_usb_voltage_now(chip, &val);
+	usb_v = val.intval/1000;
+	smblib_get_prop_batt_capacity(chip, &val);
+	cap = val.intval;
+	smblib_get_prop_batt_status(chip, &val);
+	status = val.intval;
+	smblib_get_prop_batt_charge_type(chip, &val);
+	charge_type = val.intval;
+	smblib_get_prop_batt_present(chip, &val);
+	batt_p = val.intval;
+	smblib_get_prop_usb_present(chip, &val);
+	usb_p = val.intval;
+
+/*+bug545827,xujianbang.wt,20200409,FC:[CW2017] Use soc of CW2017.*/
+#ifdef USING_CW2017_BATT
+	rc = smblib_get_prop_from_bms_qg(chip,
+			POWER_SUPPLY_PROP_CAPACITY, &val);
+	cap_1 = val.intval;
+	rc = smblib_get_prop_from_bms_qg(chip,
+			POWER_SUPPLY_PROP_TEMP, &val);
+	temp_1 = val.intval;
+	rc = smblib_get_prop_from_bms_qg(chip,
+			POWER_SUPPLY_PROP_VOLTAGE_NOW, &val);
+	v_batt_1 = val.intval /1000;
+#endif
+/*-bug545827,xujianbang.wt,20200409,FC:[CW2017] Use soc of CW2017.*/
+
+	printk_counter++;
+
+	/*WT: add battery capacity set in range begin*/
+	if(chip->store_mode == 1){
+		if(sales_code_is()){
+			if(cap >= 35)
+				vote(chip->usb_icl_votable, STORE_VOTER, true, 0);
+			else if (cap <= 30)
+				vote(chip->usb_icl_votable, STORE_VOTER, false, 0);
+		}else {
+			if(cap >= 70)
+				vote(chip->usb_icl_votable, STORE_VOTER, true, 0);
+			else if (cap <= 60)
+				vote(chip->usb_icl_votable, STORE_VOTER, false, 0);
+		}
+		pr_err("%s, Sales is %d\n",__func__, sales_code_is());
+	}
+	#ifdef WT_COMPILE_FACTORY_VERSION
+	if(cap >= 79)
+		vote(chip->usb_icl_votable, FACTORY_VOTER, true, 0);
+	else if (cap <= 61)
+		vote(chip->usb_icl_votable, FACTORY_VOTER, false, 0);
+	pr_err("%s, Factory mode set battery capacity in the range of 60-80.\n",__func__);
+	#endif
+	/*WT: add battery capacity set in range end*/
+
+	/* +bug536193,gudi.wt,20200608,FC:report 0% to healthd timely */
+	if (cap == 0)
+	{
+		power_supply_changed(chip->batt_psy);
+	}
+	/* -bug536193,gudi.wt,20200608,FC:report 0% to healthd timely */
+
+	//+Bug 536193 gudi.wt,MODIFIY,20200421,P85943,power off temp to limit current
+	if((get_boot_mode() == 1)) {
+		if(temp > 400 && temp < 430 && flag_wt != 2300000 ) {
+			flag_wt = 2300000;
+			vote(chip->fcc_votable, POWER_OFF_FCC_VOTER, true, flag_wt);
+		}
+		else if(temp >= 430 && flag_wt != 1000000) {
+			flag_wt = 1000000;
+			vote(chip->fcc_votable, POWER_OFF_FCC_VOTER, true, flag_wt);
+		}
+		else if(temp <= 400 && temp > 100 && flag_wt != 3000000) {
+			if (temp <= 380) {
+				flag_wt = 3000000;
+				vote(chip->fcc_votable, POWER_OFF_FCC_VOTER, true, flag_wt);
+			}
+			else if (flag_wt != 2300000) {
+				flag_wt = 2300000;
+				vote(chip->fcc_votable, POWER_OFF_FCC_VOTER, true, flag_wt);
+			}
+		}
+	}
+	//-Bug 536193 gudi.wt,MODIFIY,20200421,P85943,power off temp to limit current
+
+/*WT: battery 60 degree,probability no shutdowm begin*/
+#ifndef CONFIG_DISABLE_TEMP_PROTECT
+	if(temp > 600){
+		pr_err("WT temp over 60  temp=%d\n", temp);
+		power_supply_changed(chip->batt_psy);
+	}
+#endif
+/*WT: battery 60 degree,probability no shutdowm end*/
+
+//+Bug536193 gudi.wt,ADD,20200556,P85943 without adaptor plug into device,device show charging
+	if(usb_v < WT_ARB_VBUS_UV_THRESHOLD && icurrent < WT_ARB_IBUS_UA_THRESHOLD && usb_v > WT_ARB_VBUS_UV_MIN_THRESHOLD){
+		rc = vote(chip->usb_icl_votable, USER_VOTER, true, 0);
+		if(rc < 0){
+			smblib_err(chip, "Couldn't vote to suspend USB rc=%d\n", rc);
+		}
+		mdelay(100);
+		rc = vote(chip->usb_icl_votable, USER_VOTER, false, 0);
+		if(rc < 0){
+			smblib_err(chip, "Couldn't vote to resume USB rc=%d\n", rc);
+		}
+		smblib_dbg(chip, PR_MISC,"enable arb monitor work\n");
+	}
+//-Bug536193 gudi.wt,ADD,20200556,P85943 without adaptor plug into device,device show charging
+
+//+bug536193 gudi.wt,MODIFIY,2020420,P85943 limit lcd on current
+	if (usb_p) {
+		batt_temp_charging_current(chip, temp);
+	}
+//-bug536193 gudi.wt,MODIFIY,2020420,P85943 limit lcd on current
+
+#ifdef USING_CW2017_BATT
+	/*+ bug561005,gudi.wt,20200701,FC:modify when cw-capacity 100,when qg-capacity >=99 */
+	if((v_batt >= 4300) && (cap >= 95) && (chip->chg_done == 1) && (cap_1 >= 99))
+		chip->cap_100_flag = true;
+	else
+		chip->cap_100_flag = false;
+	/*- bug561005,gudi.wt,20200701,FC:modify when cw-capacity 100,when qg-capacity >=99 */
+#endif
+
+//+bug536193 gudi.wt,MODIFIY,2020716,P85943 for recharger
+	if (usb_p) {
+		if((v_batt < 4000 || cap == 99) && chip->wt_chg_done){
+			/* Force recharge */
+			val.intval = 0;
+			rc = power_supply_set_property(chip->batt_psy,
+				POWER_SUPPLY_PROP_FORCE_RECHARGE, &val);
+			if (rc < 0)
+				pr_err("odm Failed to force recharge rc=%d\n", rc);
+			else
+				pr_info("odm Forced recharge\n");
+			chip->wt_chg_done = false;
+			recharger_num_flag = 10;
+		}
+		if(cap <= 98)
+			recharger_num_flag = 0;
+		if(recharger_num_flag > 0){
+			recharger_num_flag--;
+			chip->cap_100_flag = true;
+		}
+	} else {
+		recharger_num_flag = 0;
+	}
+//-bug536193 gudi.wt,MODIFIY,2020716,P85943  for recharger
+
+	/*if heatbeat_ms is bigger than 500ms,must output the logs directly.*/
+	if ((period_ms>=500) || (abs(temp-old_temp) >= 1) || (old_cap != cap) || (old_status != status)
+			|| (old_present != batt_p) || (old_usb_present != usb_p) || (printk_counter >= 5)) {
+/*+bug545827,xujianbang.wt,20200409,FC:[CW2017] Use soc of CW2017.*/
+#ifdef USING_CW2017_BATT
+		pr_err("***temp=%d,%d,v_batt=%d,%d,c_batt=%d,cap=%d,%d,status=%d,charge_type=%d,batt_p=%d,usb_p=%d,usb_v=%dmV, icurrent=%d, chg_done=%d,flag=%d, wt_chg_done = %d\n",
+				temp, temp_1, v_batt, v_batt_1, c_batt, cap,cap_1, status, charge_type, batt_p, usb_p,usb_v,icurrent,chip->chg_done,chip->cap_100_flag, chip->wt_chg_done);
+#else
+		pr_err("***temp=%d,v_batt=%d,c_batt=%d,cap=%d,status=%d,charge_type=%d,batt_p=%d,usb_p=%d,usb_v=%dmV, icurrent=%d, chg_done=%d\n",
+				temp, v_batt, c_batt, cap, status, charge_type, batt_p, usb_p,usb_v,icurrent,chip->chg_done);
+#endif
+/*-bug545827,xujianbang.wt,20200409,FC:[CW2017] Use soc of CW2017.*/
+
+		old_temp = temp;
+		old_cap = cap;
+		old_status = status;
+		old_present = batt_p;
+		old_usb_present = usb_p;
+		printk_counter=0;
+	}
+
+	/* +EXTBPLM200703-01512,gudi.wt,20200707,let low power to shutdown */
+	if((v_batt <= LOW_BATT_SHUTDOWN) && (cap <= LOW_CAP_SHUTDOWN) && usb_p)
+	{
+		power_off_flag++;
+		smblib_err(chip, "power_off_flag=%d\n", power_off_flag);
+		if(power_off_flag >= 3)
+		{
+			smblib_err(chip, "low power to shutdown power-off\n");
+			kernel_power_off();
+		}
+	}
+	else
+		power_off_flag = 0;
+	/* -EXTBPLM200703-01512,gudi.wt,20200707,let low power to shutdown */
+
+/* +bug536193,gudi.wt,20200708,let low power test captical descend soon */
+#ifdef CONFIG_DISABLE_TEMP_PROTECT
+	if(v_batt <= 3375 && temp <= -100)
+	{
+		chip->low_temp_cap_flag++;
+		if (chip->low_temp_cap_flag != 0) {
+			if ((cap - chip->low_temp_cap_flag) <= 0) {
+				pr_err("low temp low power to shutdown poweroff capacity = 0\n");
+				kernel_power_off();
+			}
+			power_supply_changed(chip->batt_psy);
+		}
+	} else if(v_batt >= 3600) {
+		chip->low_temp_cap_flag = 0;
+	}
+#endif
+/* -bug536193,gudi.wt,20200708,let low power test captical descend soon */
+
+	//+Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+	/*When temperature changes by 3 degrees ,report power_supply*/
+	if(abs(temp-old_temp) >= 30) {
+		old_temp = temp;
+		pr_err("WT temp change\n");
+		power_supply_changed(chip->batt_psy);
+	}
+	//-Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+
+	if (period_ms >= 500) {
+		period = period_ms;
+	} else {
+		if (cap <= 5)
+			period = LOW_SOC_HEARTBEAT_MS;
+		else
+			period = HEARTBEAT_MS;
+		/* +EXTBPLM200703-01512,gudi.wt,20200707,let low power to shutdown */
+		if(power_off_flag)
+			period = 5000;
+		/* -EXTBPLM200703-01512,gudi.wt,20200707,let low power to shutdown */
+/* +bug536193,gudi.wt,20200708,let low power test captical descend soon */
+#ifdef CONFIG_DISABLE_TEMP_PROTECT
+		if(chip->low_temp_cap_flag)
+			period = 5000;
+#endif
+/* -bug536193,gudi.wt,20200708,let low power test captical descend soon */
+	}
+
+	schedule_delayed_work(&chip->period_update_work,
+				      round_jiffies_relative(msecs_to_jiffies(period)));
+}
+//-Bug594012,gudi.wt,20201023,Bringup:add period log
+
+/* +Bug594012,gudi.wt,20201023,Bringup: Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+void non_compliant_chg_WA(struct smb_charger *chg){
+	int rc;
+	u8 stat = 0, max_pulses = 0;
+	const struct apsd_result *apsd = smblib_get_apsd_result(chg);
+
+	pr_info("%s: APSD=%s\n", __func__, apsd->name);
+
+	if (!chg->qc2_unsupported_voltage &&
+			apsd->pst == POWER_SUPPLY_TYPE_USB_HVDCP) {
+		rc = smblib_read(chg, QC_CHANGE_STATUS_REG, &stat);
+		if (rc < 0)
+			smblib_err(chg,
+				"Couldn't read CHANGE_STATUS_REG rc=%d\n", rc);
+
+		if (stat & QC_5V_BIT)
+			return;
+
+		rc = smblib_read(chg, HVDCP_PULSE_COUNT_MAX_REG, &max_pulses);
+		if (rc < 0)
+			smblib_err(chg,
+				"Couldn't read QC2 max pulses rc=%d\n", rc);
+
+		chg->qc2_max_pulses = (max_pulses &
+				HVDCP_PULSE_COUNT_MAX_QC2_MASK);
+
+		if (stat & QC_12V_BIT) {
+			chg->qc2_unsupported_voltage = QC2_NON_COMPLIANT_12V;
+			rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+					HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+					HVDCP_PULSE_COUNT_MAX_QC2_9V);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't force max pulses to 9V rc=%d\n",
+						rc);
+
+		} else if (stat & QC_9V_BIT) {
+			chg->qc2_unsupported_voltage = QC2_NON_COMPLIANT_9V;
+			pr_info("%s: qc2_unsupported_voltage(%d)\n", __func__, chg->qc2_unsupported_voltage);
+			rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+					HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+					HVDCP_PULSE_COUNT_MAX_QC2_5V);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't force max pulses to 5V rc=%d\n",
+						rc);
+
+		}
+
+		rc = smblib_masked_write(chg, USBIN_AICL_OPTIONS_CFG_REG,
+				SUSPEND_ON_COLLAPSE_USBIN_BIT,
+				0);
+		if (rc < 0)
+			smblib_err(chg, "Couldn't turn off SUSPEND_ON_COLLAPSE_USBIN_BIT rc=%d\n",
+					rc);
+
+		pr_info("%s: qc2_unsupported_voltage : %d \n", __func__, chg->qc2_unsupported_voltage );
+		smblib_rerun_apsd(chg);
+	}
+}
+
+static void smblib_compliant_check_work(struct work_struct *work)
+{
+	struct smb_charger *chg = container_of(work, struct smb_charger,
+							compliant_check_work.work);
+	int rc;
+	u8 stat;
+
+	rc = smblib_read(chg, QC_CHANGE_STATUS_REG, &stat);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't read QC_CHANGE_STATUS_REG rc=%d\n",
+					rc);
+		return;
+	}
+
+	if (stat & QC_9V_BIT) {
+		rc = smblib_read(chg, AICL_STATUS_REG, &stat);
+		if (rc < 0) {
+			smblib_err(chg, "Couldn't read AICL_STATUS rc=%d\n", rc);
+			return;
+		}
+
+		if((stat & USBIN_CH_COLLAPSE) && (stat & ICL_IMIN) && (!chg->qc2_unsupported_voltage)) {
+			non_compliant_chg_WA(chg);
+			smblib_run_aicl(chg, RESTART_AICL);
+			smblib_hvdcp_set_fsw(chg, QC_5V_BIT);
+			rc = smblib_force_vbus_voltage(chg, FORCE_5V_BIT);
+			if (rc < 0)
+				pr_err("Failed to force 5V\n");
+		}
+	}
+}
+#endif
+/* -Bug594012,gudi.wt,20201023,Bringup:Add for AFC, End --- */
 
 #define MOISTURE_PROTECTION_CHECK_DELAY_MS 300000		/* 5 mins */
 static void smblib_moisture_protection_work(struct work_struct *work)
@@ -7938,7 +9097,13 @@ static void smblib_cp_status_change_work(struct work_struct *work)
 					800000);
 	}
 relax:
-	pm_relax(chg->dev);
+	/*+Bug594012,gudi.wt,20201023,Bringup:Fix an error of awake with charging.*/
+	/* WT: Don't relax PM awake when charger insert */
+	if (!is_client_vote_enabled_locked(chg->awake_votable,
+					CHG_INSERT_VOTER)) {
+		pm_relax(chg->dev);
+	}
+	/*-Bug594012,gudi.wt,20201023,Bringup:Fix an error of awake with charging.*/
 }
 
 static int smblib_create_votables(struct smb_charger *chg)
@@ -8133,6 +9298,20 @@ int smblib_init(struct smb_charger *chg)
 					smblib_pr_swap_detach_work);
 	INIT_DELAYED_WORK(&chg->pr_lock_clear_work,
 					smblib_pr_lock_clear_work);
+	/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+	INIT_DELAYED_WORK(&chg->compliant_check_work, smblib_compliant_check_work);
+#endif
+	/* -Bug594012,gudi.wt,20201023,Bringup:dd for AFC, End --- */
+
+	//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+	INIT_DELAYED_WORK(&chg->usbov_delay_report_work, smblib_usbov_delay_report_work);
+
+//+Bug594012,gudi.wt,20201023,Bringup:add period log
+	INIT_DELAYED_WORK(&chg->period_update_work, period_update);
+	schedule_delayed_work(&chg->period_update_work,
+				  round_jiffies_relative(msecs_to_jiffies(10000)));
+//-Bug594012,gudi.wt,20201023,Bringup:add period log
 	timer_setup(&chg->apsd_timer, apsd_timer_cb, 0);
 
 	INIT_DELAYED_WORK(&chg->role_reversal_check,
@@ -8172,6 +9351,9 @@ int smblib_init(struct smb_charger *chg)
 		return -ENODEV;
 	}
 
+	// Chk 109526 tankaikun.wt,20220218, add, battery temp test
+	chg->batt_temp_debug_flag = false;
+
 	chg->fake_capacity = -EINVAL;
 	chg->fake_input_current_limited = -EINVAL;
 	chg->fake_batt_status = -EINVAL;
@@ -8183,6 +9365,16 @@ int smblib_init(struct smb_charger *chg)
 	chg->typec_irq_en = true;
 	chg->cp_topo = -EINVAL;
 	chg->dr_mode = TYPEC_PORT_DRP;
+//+bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup,add SS-node
+	chg->store_mode = -EINVAL;
+	chg->slate_mode = -EINVAL;
+	chg->usb_suspend_mode = -EINVAL;
+//-bug536193 gudi.wt,MODIFIY,20200325,P85943 bringup,add SS-node
+//+Bug594012,gudi.wt,20201023,Bringup:add afc_flag node
+#if defined(CONFIG_AFC)
+       chg->afc_flag = 0;
+#endif
+//-Bug594012,gudi.wt,20201023,Bringup:add afc_flag node
 
 	switch (chg->mode) {
 	case PARALLEL_MASTER:
@@ -8209,6 +9401,8 @@ int smblib_init(struct smb_charger *chg)
 		}
 
 		chg->bms_psy = power_supply_get_by_name("bms");
+		/* Bug594012,gudi.wt,20201023,Bringup:Update CW driver(battery ID/data).*/
+		chg->cw_battery_psy = power_supply_get_by_name("cw2017-bat");
 
 		if (chg->sec_pl_present) {
 			chg->pl.psy = power_supply_get_by_name("parallel");
@@ -8290,6 +9484,8 @@ int smblib_deinit(struct smb_charger *chg)
 		cancel_delayed_work_sync(&chg->lpd_detach_work);
 		cancel_delayed_work_sync(&chg->thermal_regulation_work);
 		cancel_delayed_work_sync(&chg->usbov_dbc_work);
+		//Bug 536193,wangjiayuan.wt,Modify,20200518,reduce the reproducibility rate of usbin-ov error.
+		cancel_delayed_work_sync(&chg->usbov_delay_report_work);
 		cancel_delayed_work_sync(&chg->role_reversal_check);
 		cancel_delayed_work_sync(&chg->pr_swap_detach_work);
 		power_supply_unreg_notifier(&chg->nb);
@@ -8308,3 +9504,52 @@ int smblib_deinit(struct smb_charger *chg)
 
 	return 0;
 }
+
+/* +Bug594012,gudi.wt,20201023,Bringup:Add for AFC, Begin +++  */
+#if defined(CONFIG_AFC)
+int is_afc_result(struct smb_charger *chg,int result)
+{
+	if (chg->real_charger_type != POWER_SUPPLY_TYPE_USB_DCP
+			&& chg->real_charger_type != POWER_SUPPLY_TYPE_AFC) {
+		smblib_err(chg, "cable is not DCP OR AFC %d\n", result);
+		vote(chg->usb_icl_votable, SEC_BATTERY_AFC_VOTER, false, 0);
+		return 0;
+	}
+
+	smblib_err(chg, "is_afc_result = %d, before afc_sts(%d)\n", result, chg->afc_sts);
+	chg->afc_sts = result;
+
+	if ((result == NOT_AFC) || (result == AFC_FAIL) || (result == AFC_INIT))  {
+		if(chg->real_charger_type == POWER_SUPPLY_TYPE_AFC) {
+			smblib_err(chg, "afc_set_voltage() failed\n");
+		} else {
+			smblib_err(chg, "AFC failed, re-enabling HVDCP\n");
+			smblib_hvdcp_detect_enable(chg, true);
+			vote(chg->usb_icl_votable, SEC_BATTERY_AFC_VOTER, false, 0);
+		}
+	} else if (result == AFC_5V) {
+		smblib_err(chg, "afc set to 5V\n");
+		smblib_hvdcp_set_fsw(chg, QC_5V_BIT);
+		vote(chg->usb_icl_votable, SEC_BATTERY_AFC_VOTER, true, DCP_CURRENT_UA);
+		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, false, 0);
+	} else if (result == AFC_9V) {
+		smblib_err(chg, "afc set to 9V\n");
+		smblib_hvdcp_set_fsw(chg, QC_9V_BIT);
+		//vote(chg->usb_icl_votable, HVDCP2_ICL_VOTER, false, 0);
+		vote(chg->usb_icl_votable, SEC_BATTERY_AFC_VOTER, true, AFC_CURRENT_UA);
+		vote(chg->fcc_votable, SEC_BATTERY_AFC_VOTER, true, 3000000);
+		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, false, 0);
+	} else if (result == AFC_DISABLE) {
+		smblib_err(chg, "afc disable\n");
+		vote(chg->usb_icl_votable, SEC_BATTERY_AFC_VOTER, false, 0);
+	}
+
+	if (result >= AFC_5V)
+		chg->real_charger_type = POWER_SUPPLY_TYPE_AFC;
+
+	sec_bat_monitor_work(chg);
+
+	return 0;
+}
+#endif
+/* -Bug 538062, zhangbin2.wt, 20200309, Add for AFC, End --- */

@@ -17,6 +17,7 @@
 #include <linux/types.h>
 #endif
 
+#define SECLOG "[sec_input]"
 #include "input-event-codes.h"
 
 /*

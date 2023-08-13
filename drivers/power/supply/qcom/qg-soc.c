@@ -377,6 +377,8 @@ exit_soc_scale:
 int qg_adjust_sys_soc(struct qpnp_qg *chip)
 {
 	int soc, vbat_uv, rc;
+//Bug594012,gudi.wt,20201023,Bringup:charger 100% current to 300mA
+        int ibat = 0;
 	int vcutoff_uv = chip->dt.vbatt_cutoff_mv * 1000;
 
 	chip->sys_soc = CAP(QG_MIN_SOC, QG_MAX_SOC, chip->sys_soc);
@@ -391,7 +393,19 @@ int qg_adjust_sys_soc(struct qpnp_qg *chip)
 		if (chip->last_adj_ssoc == FULL_SOC)
 			soc = FULL_SOC;
 		else /* Hold SOC at 99% until we hit 100% */
+//+Bug594012,gudi.wt,20201023,Bringup:charger 100% current to 300mA
+                {
+                        rc = qg_get_battery_current(chip, &ibat);
+                        if (rc < 0){
+                                printk("WT read ibat error\n");
+                                ibat = 0;
+                        }
+                        if((chip->last_adj_ssoc == 99) && (ibat > -300000) && (ibat < 0))
+                                soc = 100;
+                        else
 			soc = FULL_SOC - 1;
+                }
+//-Bug594012,gudi.wt,20201023,Bringup:charger 100% current to 300mA
 	} else {
 		soc = DIV_ROUND_CLOSEST(chip->sys_soc, 100);
 	}
@@ -521,16 +535,41 @@ static bool maint_soc_timeout(struct qpnp_qg *chip)
 static void update_msoc(struct qpnp_qg *chip)
 {
 	int rc = 0, sdam_soc, batt_temp = 0;
+	//Bug594012,gudi.wt,20201023,Bringup:Limit SOC update when charging stop.
+	int last_ibat = 0;
 	bool input_present = is_input_present(chip);
+
+	//+Bug594012,gudi.wt,20201023,Bringup:Limit SOC update when charging stop.
+	rc = qg_read(chip, chip->qg_base + QG_LAST_ADC_I_DATA0_REG,
+					(u8 *)&last_ibat, 2);
+	if (rc < 0)
+	{
+		pr_err("Failed to read ibat, rc=%d\n",  rc);
+		last_ibat = 0;
+	}
+	last_ibat = sign_extend32(last_ibat, 15);
+	last_ibat = I_RAW_TO_UA(last_ibat);
 
 	if (chip->catch_up_soc > chip->msoc) {
 		/* SOC increased */
-		if (input_present) /* Increment if input is present */
+		//if (input_present) /* Increment if input is present */
+		chip->catch_up_soc = chip->msoc;
+		if (input_present && last_ibat <= 0)/* Increment if USB is present */
+		{
 			chip->msoc += chip->dt.delta_soc;
+			chip->catch_up_soc = chip->msoc;
+		}
 	} else if (chip->catch_up_soc < chip->msoc) {
 		/* SOC dropped */
+		chip->catch_up_soc = chip->msoc;
+		if (!input_present || last_ibat > 0)
+		{
 		chip->msoc -= chip->dt.delta_soc;
+			chip->catch_up_soc = chip->msoc;
+		}
 	}
+	//-Bug594012,gudi.wt,20201023,Bringup:Limit SOC update when charging stop.
+
 	chip->msoc = CAP(0, 100, chip->msoc);
 
 	if (chip->maint_soc > 0 && chip->msoc < chip->maint_soc

@@ -27,11 +27,12 @@
 #include <soc/qcom/watchdog.h>
 #include <soc/qcom/minidump.h>
 
+#include <wt_sys/wt_boot_reason.h>
+
 #define EMERGENCY_DLOAD_MAGIC1    0x322A4F99
 #define EMERGENCY_DLOAD_MAGIC2    0xC67E4350
 #define EMERGENCY_DLOAD_MAGIC3    0x77777777
 #define EMMC_DLOAD_TYPE		0x2
-
 #define SCM_IO_DISABLE_PMIC_ARBITER	1
 #define SCM_IO_DEASSERT_PS_HOLD		2
 #define SCM_WDOG_DEBUG_BOOT_PART	0x9
@@ -48,8 +49,13 @@
 #define KASLR_OFFSET_PROP "qcom,msm-imem-kaslr_offset"
 #define KASLR_OFFSET_BIT_MASK	0x00000000FFFFFFFF
 
+#define PON_RESTART_REASON_CROSS_FAIL 0x2C
+
 static int restart_mode;
-static void *restart_reason, *dload_type_addr;
+
+static void __iomem *restart_reason;
+
+static void __iomem *dload_type_addr;
 static bool scm_pmic_arbiter_disable_supported;
 static bool scm_deassert_ps_hold_supported;
 /* Download mode master kill-switch */
@@ -62,7 +68,12 @@ static void scm_disable_sdi(void);
  * There is no API from TZ to re-enable the registers.
  * So the SDI cannot be re-enabled when it already by-passed.
  */
+/* Chk106451,zhaizhenhong.wt,ADD, 20211130, bringup checklist - add wt final release control download_mode  */
+#ifdef WT_FINAL_RELEASE
+static int download_mode = 0;
+#else
 static int download_mode = 1;
+#endif
 static struct kobject dload_kobj;
 
 static int in_panic;
@@ -188,6 +199,7 @@ static bool get_dload_mode(void)
 
 static void enable_emergency_dload_mode(void)
 {
+#ifndef WT_FINAL_RELEASE
 	int ret;
 
 	if (emergency_dload_mode_addr) {
@@ -211,6 +223,9 @@ static void enable_emergency_dload_mode(void)
 	ret = scm_set_dload_mode(SCM_EDLOAD_MODE, 0);
 	if (ret)
 		pr_err("Failed to set secure EDLOAD mode: %d\n", ret);
+#else
+	pr_err("Failed to set secure EDLOAD mode \n");
+#endif
 }
 
 static int dload_set(const char *val, const struct kernel_param *kp)
@@ -496,7 +511,14 @@ static void msm_restart_prepare(const char *cmd)
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
 
 	if (cmd != NULL) {
+                // CHK, douyingnan.wt, ADD, 20211222, dump display
+                wt_btreason_set_reset_magic(RESET_MAGIC_CMD_REBOOT);
 		if (!strncmp(cmd, "bootloader", 10)) {
+		//+ Chk106706,zhaizhenhong.wt,ADD,add for reboot dm-verity/bootloader warm reset
+		#ifndef WT_FINAL_RELEASE
+			qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
+		#endif
+		//- Chk106706,zhaizhenhong.wt,ADD,add for reboot dm-verity/bootloader warm reset
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_BOOTLOADER);
 			__raw_writel(0x77665500, restart_reason);
@@ -509,6 +531,11 @@ static void msm_restart_prepare(const char *cmd)
 				PON_RESTART_REASON_RTC);
 			__raw_writel(0x77665503, restart_reason);
 		} else if (!strcmp(cmd, "dm-verity device corrupted")) {
+		//+ Chk106706,zhaizhenhong.wt,ADD,add for reboot dm-verity/bootloader warm reset
+		#ifndef WT_FINAL_RELEASE
+			qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
+		#endif
+		//- Chk106706,zhaizhenhong.wt,ADD,add for reboot dm-verity/bootloader warm reset
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_DMVERITY_CORRUPTED);
 			__raw_writel(0x77665508, restart_reason);
@@ -520,6 +547,16 @@ static void msm_restart_prepare(const char *cmd)
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_KEYS_CLEAR);
 			__raw_writel(0x7766550a, restart_reason);
+		} else if (!strncmp(cmd, "cross_fail", 10)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_CROSS_FAIL);
+			__raw_writel(0x7766550c, restart_reason);
+#ifdef CONFIG_SEC_PERIPHERAL_SECURE_CHK
+		} else if (!strcmp(cmd, "peripheral_hw_reset")) {
+			qpnp_pon_set_restart_reason(
+					PON_RESTART_REASON_SECURE_CHECK_FAIL);
+			__raw_writel(0x7766550f, restart_reason);
+#endif
 		} else if (!strncmp(cmd, "oem-", 4)) {
 			unsigned long code;
 			int ret;
@@ -528,8 +565,6 @@ static void msm_restart_prepare(const char *cmd)
 			if (!ret)
 				__raw_writel(0x6f656d00 | (code & 0xff),
 					     restart_reason);
-		} else if (!strncmp(cmd, "edl", 3)) {
-			enable_emergency_dload_mode();
 		} else {
 			__raw_writel(0x77665501, restart_reason);
 		}
@@ -603,6 +638,17 @@ static void do_msm_poweroff(void)
 	pr_err("Powering off has failed\n");
 }
 
+static int dload_mode_normal_reboot_handler(struct notifier_block *nb,
+		unsigned long l, void *p)
+{
+	set_dload_mode(0);
+	return 0;
+}
+
+static struct notifier_block dload_reboot_block = {
+	.notifier_call = dload_mode_normal_reboot_handler
+};
+
 static int msm_restart_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -611,6 +657,8 @@ static int msm_restart_probe(struct platform_device *pdev)
 	int ret = 0;
 
 	setup_dload_mode_support();
+
+	register_reboot_notifier(&dload_reboot_block);
 
 	np = of_find_compatible_node(NULL, NULL,
 				"qcom,msm-imem-restart_reason");

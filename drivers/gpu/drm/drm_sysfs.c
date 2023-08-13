@@ -228,17 +228,32 @@ static ssize_t modes_show(struct device *device,
 
 	return written;
 }
+/*bug536291,sijun.wt,2020/0307, add clk node for lcd begin*/
+u64 flag_node=0;
+static ssize_t mipi_clk_store(struct device *device,
+			   struct device_attribute *attr,
+			   const char *buf, size_t count)
+{
+	int flag_debug;
+	sscanf(buf,"%d",&flag_debug);
+
+    flag_node=(u64)flag_debug;
+	return count;
+}
+/*bug536291,sijun.wt,2020/0307, add clk node for lcd end*/
 
 static DEVICE_ATTR_RW(status);
 static DEVICE_ATTR_RO(enabled);
 static DEVICE_ATTR_RO(dpms);
 static DEVICE_ATTR_RO(modes);
+static DEVICE_ATTR_WO(mipi_clk);//bug536291,sijun.wt,2020/0307, add clk node for lcd
 
 static struct attribute *connector_dev_attrs[] = {
 	&dev_attr_status.attr,
 	&dev_attr_enabled.attr,
 	&dev_attr_dpms.attr,
 	&dev_attr_modes.attr,
+	&dev_attr_mipi_clk.attr,//bug536291,sijun.wt,2020/0307, add clk node for lcd
 	NULL
 };
 

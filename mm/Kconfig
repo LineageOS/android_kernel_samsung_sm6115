@@ -688,11 +688,18 @@ config MAX_STACK_SIZE_MB
 config BALANCE_ANON_FILE_RECLAIM
 	bool "During reclaim treat anon and file backed pages equally"
 	depends on SWAP
+	default y
 	help
 	  When performing memory reclaim treat anonymous and file backed pages
 	  equally.
 	  Swapping anonymous pages out to memory can be efficient enough to justify
 	  treating anonymous and file backed pages equally.
+
+config FAULT_AROUND_4KB
+	bool "Fault around bytes 4KB"
+	default n
+	help
+	  Reduce fault around bytes to 4KB
 
 config DEFERRED_STRUCT_PAGE_INIT
 	bool "Defer initialisation of struct pages to kthreads"
@@ -815,6 +822,16 @@ config PERCPU_STATS
 	  information includes global and per chunk statistics, which can
 	  be used to help understand percpu memory usage.
 
+config INCREASE_MAXIMUM_SWAPPINESS
+	bool "Allow swappiness to be set up to 200"
+	depends on SWAP
+	default y
+
+config DIRECT_RECLAIM_FILE_PAGES_ONLY
+	bool "Reclaim file pages only on direct reclaim path"
+	depends on SWAP
+	default y
+
 config ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
        def_bool n
 
@@ -837,6 +854,13 @@ config SPECULATIVE_PAGE_FAULT
 	 allocating, it is failing its processing and a classic page fault
 	 is then tried.
 
+config KSWAPD_CPU
+	hex "Set kswapd cpu affinity by default"
+	default 0x3F
+	help
+	  Set kswapd cpu affinity by default. 0x3F means allowing CPU as 0 to 5.
+	  To disable this config, set this to 0.
+
 config HAVE_USERSPACE_LOW_MEMORY_KILLER
 	bool "Have userspace low memory killer"
 	default n
@@ -845,6 +869,14 @@ config HAVE_USERSPACE_LOW_MEMORY_KILLER
 	  userspace low memory killer as it can call into the OOM killer.
 	  Therefore, add a timeout mechanism to give the userspace
 	  low memory killer a chance to run.
+
+config MMAP_READAROUND_LIMIT
+	int "Limit mmap readaround upperbound"
+	default 0
+	help
+	  Inappropriate mmap readaround size can hurt device performance
+	  during the sluggish situation. Add the hard upper-limit for
+	  mmap readaround.
 
 config GUP_BENCHMARK
 	bool "Enable infrastructure for get_user_pages_fast() benchmarking"
@@ -857,6 +889,23 @@ config GUP_BENCHMARK
 
 config ARCH_HAS_PTE_SPECIAL
 	bool
+
+config LARGE_DIRTY_BUFFER
+	bool "Use large dirty_threshold value by enabling dirty_ratio"
+	default n
+	help
+	  This config enables dirty_ratio/dirty_background_ratio,
+	  and it means large dirty_threshold value in 64bit architectures.
+	  If unsure, say N to use kernel default value
+
+config MAX_DIRTY_THRESH_PAGES
+	int "The upper bound of VM dirty_thresh value in number of pages"
+	depends on LARGE_DIRTY_BUFFER
+	default 25600
+	help
+	  This value is the upper bound of VM dirty-thresh. (0 means no limit.)
+	  It is only effective when dirty_ratio is used.
+	  (Setting dirty_bytes disables this option.)
 
 endmenu
 

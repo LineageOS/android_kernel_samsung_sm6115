@@ -1135,9 +1135,8 @@ static void subsystem_restart_wq_func(struct work_struct *work)
 	track->p_state = SUBSYS_RESTARTING;
 	spin_unlock_irqrestore(&track->s_lock, flags);
 
-	/* Collect ram dumps for all subsystems in order here */
 	for_each_subsys_device(list, count, NULL, subsystem_ramdump);
-
+	
 	for_each_subsys_device(list, count, NULL, subsystem_free_memory);
 
 	notify_each_subsys_device(list, count, SUBSYS_BEFORE_POWERUP, NULL);
@@ -1279,6 +1278,37 @@ int subsystem_restart(const char *name)
 }
 EXPORT_SYMBOL(subsystem_restart);
 
+int subsystem_crash(const char *name)
+{
+	struct subsys_device *dev = find_subsys_device(name);
+
+	if (!dev)
+		return -ENODEV;
+
+	if (!get_device(&dev->dev))
+		return -ENODEV;
+
+	if (!subsys_get_crash_status(dev)) {
+		pr_err("%s: set force_stop_bit\n", __func__);
+		
+		qcom_smem_state_update_bits(dev->desc->state,
+				BIT(dev->desc->force_stop_bit),
+				BIT(dev->desc->force_stop_bit));
+	}
+	return 0;
+}
+EXPORT_SYMBOL(subsystem_crash);
+
+void subsys_force_stop(const char *name, bool val)
+{
+	if (strncmp(name, "modem", 5)) {
+		pr_err("only modem ssr supported %s: %d\n", name, val);
+		return;
+	}
+	subsystem_crash(name);
+}
+EXPORT_SYMBOL(subsys_force_stop);
+
 int subsystem_crashed(const char *name)
 {
 	struct subsys_device *dev = find_subsys_device(name);
@@ -1305,6 +1335,30 @@ int subsystem_crashed(const char *name)
 	return 0;
 }
 EXPORT_SYMBOL(subsystem_crashed);
+
+#ifdef CONFIG_SEC_PCIE
+bool is_subsystem_crash(const char *name)
+{
+	struct subsys_device *dev = find_subsys_device(name);
+
+	if (!dev)
+		return false;
+
+	return subsys_get_crash_status(dev) ? true : false;
+}
+EXPORT_SYMBOL(is_subsystem_crash);
+
+int is_subsystem_online(const char *name)
+{
+	struct subsys_device *dev = find_subsys_device(name);
+
+	if (!dev)
+		return false;
+
+	return dev->count;
+}
+EXPORT_SYMBOL(is_subsystem_online);
+#endif
 
 void subsys_set_crash_status(struct subsys_device *dev,
 				enum crash_status crashed)
@@ -1825,6 +1879,13 @@ struct subsys_device *subsys_register(struct subsys_desc *desc)
 	subsys->desc->state = NULL;
 	strlcpy(subsys->desc->fw_name, desc->name,
 			sizeof(subsys->desc->fw_name));
+/*+ Chk 106452,Chk 106451,zhaizhenhong.wt, ADD,20211130, bringup checklist - add wt final release control restart level */
+#ifdef WT_FINAL_RELEASE
+	subsys->restart_level = RESET_SUBSYS_COUPLED;
+#else
+	subsys->restart_level = RESET_SOC;
+#endif
+/*- Chk 106452,Chk 106451,zhaizhenhong.wt, ADD,20211130, bringup checklist - add wt final release control restart level */
 
 	subsys->notify = subsys_notif_add_subsys(desc->name);
 	subsys->early_notify = subsys_get_early_notif_info(desc->name);

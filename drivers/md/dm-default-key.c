@@ -191,7 +191,7 @@ static int default_key_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	char dummy;
 	int err;
 	int __argc;
-	char *_argv[10];
+	char *_argv[15];//bug 727729,zhaizhenhong.wt,MOD,CID174053: Function "default_key_ctr"out-of-bound write
 	bool is_legacy = false;
 
 	if (argc >= 4 && !strcmp(argv[0], "AES-256-XTS")) {

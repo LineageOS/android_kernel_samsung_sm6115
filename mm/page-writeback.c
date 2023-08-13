@@ -70,13 +70,21 @@ static long ratelimit_pages = 32;
 /*
  * Start background writeback (via writeback threads) at this percentage
  */
-int dirty_background_ratio = 10;
+#ifdef CONFIG_LARGE_DIRTY_BUFFER
+int dirty_background_ratio = 5;
+#else
+int dirty_background_ratio;
+#endif
 
 /*
  * dirty_background_bytes starts at 0 (disabled) so that it is a function of
  * dirty_background_ratio * the amount of dirtyable memory
  */
+#ifdef CONFIG_LARGE_DIRTY_BUFFER
 unsigned long dirty_background_bytes;
+#else
+unsigned long dirty_background_bytes = 25 * 1024 * 1024;
+#endif
 
 /*
  * free highmem will not be subtracted from the total free memory
@@ -87,13 +95,21 @@ int vm_highmem_is_dirtyable;
 /*
  * The generator of dirty data starts writeback at this percentage
  */
+#ifdef CONFIG_LARGE_DIRTY_BUFFER
 int vm_dirty_ratio = 20;
+#else
+int vm_dirty_ratio;
+#endif
 
 /*
  * vm_dirty_bytes starts at 0 (disabled) so that it is a function of
  * vm_dirty_ratio * the amount of dirtyable memory
  */
+#ifdef CONFIG_LARGE_DIRTY_BUFFER
 unsigned long vm_dirty_bytes;
+#else
+unsigned long vm_dirty_bytes = 50 * 1024 * 1024;
+#endif
 
 /*
  * The interval between `kupdate'-style writebacks
@@ -391,7 +407,7 @@ static unsigned long global_dirtyable_memory(void)
  */
 static void domain_dirty_limits(struct dirty_throttle_control *dtc)
 {
-	const unsigned long available_memory = dtc->avail;
+	unsigned long available_memory = dtc->avail;
 	struct dirty_throttle_control *gdtc = mdtc_gdtc(dtc);
 	unsigned long bytes = vm_dirty_bytes;
 	unsigned long bg_bytes = dirty_background_bytes;
@@ -426,6 +442,14 @@ static void domain_dirty_limits(struct dirty_throttle_control *dtc)
 		thresh = DIV_ROUND_UP(bytes, PAGE_SIZE);
 	else
 		thresh = (ratio * available_memory) / PAGE_SIZE;
+
+#if defined(CONFIG_MAX_DIRTY_THRESH_PAGES) && (CONFIG_MAX_DIRTY_THRESH_PAGES > 0)
+	if (!bytes && thresh > CONFIG_MAX_DIRTY_THRESH_PAGES) {
+		thresh = CONFIG_MAX_DIRTY_THRESH_PAGES;
+		/* reduce available memory not to make bg_thresh too high */
+		available_memory = thresh * PAGE_SIZE / ratio;
+	}
+#endif
 
 	if (bg_bytes)
 		bg_thresh = DIV_ROUND_UP(bg_bytes, PAGE_SIZE);
@@ -484,6 +508,11 @@ static unsigned long node_dirty_limit(struct pglist_data *pgdat)
 			node_memory / global_dirtyable_memory();
 	else
 		dirty = vm_dirty_ratio * node_memory / 100;
+
+#if defined(CONFIG_MAX_DIRTY_THRESH_PAGES) && (CONFIG_MAX_DIRTY_THRESH_PAGES > 0)
+	if (!vm_dirty_bytes && dirty > CONFIG_MAX_DIRTY_THRESH_PAGES)
+		dirty = CONFIG_MAX_DIRTY_THRESH_PAGES;
+#endif
 
 	if (tsk->flags & PF_LESS_THROTTLE || rt_task(tsk))
 		dirty += dirty / 4;
@@ -1774,6 +1803,17 @@ pause:
 					  period,
 					  pause,
 					  start_time);
+
+		/* IOPP-prevent_infinite_writeback-v1.1.4.4 */
+		/* Do not sleep if the backing device is removed */
+		if (unlikely(!bdi->dev))
+			return;
+
+		/* Collecting approximate value. No lock required. */
+		bdi->last_thresh = thresh;
+		bdi->last_nr_dirty = dirty;
+		bdi->paused_total += pause;
+
 		__set_current_state(TASK_KILLABLE);
 		wb->dirty_sleep = now;
 		io_schedule_timeout(pause);
@@ -2423,6 +2463,7 @@ void account_page_dirtied(struct page *page, struct address_space *mapping)
 		__inc_zone_page_state(page, NR_ZONE_WRITE_PENDING);
 		__inc_node_page_state(page, NR_DIRTIED);
 		inc_wb_stat(wb, WB_RECLAIMABLE);
+		atomic64_inc(&inode->i_dirty_page_count);
 		inc_wb_stat(wb, WB_DIRTIED);
 		task_io_account_write(PAGE_SIZE);
 		current->nr_dirtied++;
@@ -2440,9 +2481,12 @@ void account_page_cleaned(struct page *page, struct address_space *mapping,
 			  struct bdi_writeback *wb)
 {
 	if (mapping_cap_account_dirty(mapping)) {
+		struct inode *inode = mapping->host;
+
 		dec_lruvec_page_state(page, NR_FILE_DIRTY);
 		dec_zone_page_state(page, NR_ZONE_WRITE_PENDING);
 		dec_wb_stat(wb, WB_RECLAIMABLE);
+		atomic64_dec(&inode->i_dirty_page_count);
 		task_io_account_cancelled_write(PAGE_SIZE);
 	}
 }
@@ -2699,6 +2743,7 @@ int clear_page_dirty_for_io(struct page *page)
 			dec_lruvec_page_state(page, NR_FILE_DIRTY);
 			dec_zone_page_state(page, NR_ZONE_WRITE_PENDING);
 			dec_wb_stat(wb, WB_RECLAIMABLE);
+			atomic64_dec(&inode->i_dirty_page_count);
 			ret = 1;
 		}
 		unlocked_inode_to_wb_end(inode, &cookie);

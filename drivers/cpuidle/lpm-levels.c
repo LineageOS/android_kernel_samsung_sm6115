@@ -125,6 +125,15 @@ module_param_named(print_parsed_dt, print_parsed_dt, bool, 0664);
 static bool sleep_disabled;
 module_param_named(sleep_disabled, sleep_disabled, bool, 0664);
 
+//bug702115,linaiyu@wt,20211222,modify,optimize performance when otg device copy file,start
+static bool usb_lpm_disable;
+void msm_cpuidle_lpm_disable(bool disable)
+{
+	usb_lpm_disable = disable;
+}
+EXPORT_SYMBOL(msm_cpuidle_lpm_disable);
+//bug702115,linaiyu@wt,20211222,modify,optimize performance when otg device copy file,end
+
 /**
  * msm_cpuidle_get_deep_idle_latency - Get deep idle latency value
  *
@@ -654,6 +663,11 @@ static inline bool lpm_disallowed(s64 sleep_us, int cpu, struct lpm_cpu *pm_cpu)
 
 	if (cpu_isolated(cpu))
 		goto out;
+
+	//bug702115,linaiyu@wt,20211222,modify,optimize performance when otg device copy file,start
+	if (usb_lpm_disable)
+		return true;
+	//bug702115,linaiyu@wt,20211222,modify,optimize performance when otg device copy file,end
 
 	if (sleep_disabled)
 		return true;

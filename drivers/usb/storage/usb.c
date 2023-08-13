@@ -62,6 +62,8 @@
 
 #define DRV_NAME "usb-storage"
 
+extern void msm_cpuidle_lpm_disable(bool disable);	//bug702115,linaiyu@wt,20211222,modify,optimize performance when otg device copy file
+
 /* Some informational data */
 MODULE_AUTHOR("Matthew Dharm <mdharm-usb@one-eyed-alien.net>");
 MODULE_DESCRIPTION("USB Mass Storage driver for Linux");
@@ -955,6 +957,9 @@ int usb_stor_probe1(struct us_data **pus,
 	/*
 	 * Allow 16-byte CDBs and thus > 2TB
 	 */
+#ifdef CONFIG_USB_STORAGE_DETECT
+	host->by_usb = 1;
+#endif
 	host->max_cmd_len = 16;
 	host->sg_tablesize = usb_stor_sg_tablesize(intf);
 	*pus = us = host_to_us(host);
@@ -1064,6 +1069,7 @@ int usb_stor_probe2(struct us_data *us)
 		dev_dbg(dev, "waiting for device to settle before scanning\n");
 	queue_delayed_work(system_freezable_wq, &us->scan_dwork,
 			delay_use * HZ);
+	msm_cpuidle_lpm_disable(true);		//bug702115,linaiyu@wt,20211222,modify,disable lpm when connect usb storage
 	return 0;
 
 	/* We come here if there are any problems */
@@ -1083,6 +1089,7 @@ void usb_stor_disconnect(struct usb_interface *intf)
 
 	quiesce_and_remove_host(us);
 	release_everything(us);
+	msm_cpuidle_lpm_disable(false);		//bug702115,linaiyu@wt,20211222,modify,disable lpm when connect usb storage
 }
 EXPORT_SYMBOL_GPL(usb_stor_disconnect);
 

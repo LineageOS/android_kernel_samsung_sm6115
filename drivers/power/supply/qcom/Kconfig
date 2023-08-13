@@ -150,6 +150,12 @@ config QPNP_QG
 	  to determine the battery state-of-charge (SOC) and supports other
 	  battery management features.
 
+config FUELGAUGE_CW2017
+        tristate "CW2017 fuelgauge driver"
+        depends on I2C
+        help
+          Say Y to enable support for the CW2015 fuelgauge ICs.
+
 config HL6111R
 	bool "HL6111R driver"
 	depends on I2C && OF
@@ -162,6 +168,21 @@ config HL6111R
 	  sizes. The HL6111R has voltage, current and temperature
 	  protection mechanisms, an I2C interface, and a PSNS output.
 
+#Bug594012,gudi.wt,20201023,Bringup: Add for disable temp test
+config DISABLE_TEMP_PROTECT
+	bool "control of TEMP protect"
+	default n
+	help
+	  Say Y here to enable a function which disabled TEMP protect...
+	  WARNNING:Only SCM could open it.
+
+#EXTB P200521-06425 caijiaqi.wt,20200814, Add, battery protect
+config BATTERY_AGE_FORECAST
+	bool "control of Battery protect"
+	default n
+	help
+	  Say Y here to enable a function which enable Battery protect...
+	  WARNNING:Only SCM could open it.
 config SMB1398_CHARGER
 	tristate "SMB1398 power supply framework based driver"
 	depends on MFD_I2C_PMIC
@@ -174,5 +195,11 @@ config SMB1398_CHARGER
 	  (2) DIV2 and 3-level buck combo mode to regulate the output power from
 	      wireless charger receiver and provide the input for downstream
 	      chargers.
+
+config BATT_CISD
+	 bool "support for cisd"
+	 help
+	 Say Y to include support for cisd
+	 cisd means cell internal short detection
 
 endmenu

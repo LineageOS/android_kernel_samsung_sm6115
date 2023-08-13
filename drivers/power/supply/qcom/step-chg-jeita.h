@@ -25,7 +25,4 @@ struct range_data {
 int qcom_step_chg_init(struct device *dev,
 		bool step_chg_enable, bool sw_jeita_enable, bool jeita_arb_en);
 void qcom_step_chg_deinit(void);
-int read_range_data_from_node(struct device_node *node,
-		const char *prop_str, struct range_data *ranges,
-		int max_threshold, u32 max_value);
 #endif /* __STEP_CHG_H__ */

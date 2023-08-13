@@ -82,8 +82,9 @@ static bool arch_counter_suspend_stop;
 static bool vdso_default = true;
 
 static cpumask_t evtstrm_available = CPU_MASK_NONE;
-static bool evtstrm_enable = IS_ENABLED(CONFIG_ARM_ARCH_TIMER_EVTSTREAM);
 
+//bug707479,lizhou02.wt,20211208,AFC modify for udelay
+static bool evtstrm_enable = 0;//IS_ENABLED(CONFIG_ARM_ARCH_TIMER_EVTSTREAM);
 static int __init early_evtstrm_cfg(char *buf)
 {
 	return strtobool(buf, &evtstrm_enable);

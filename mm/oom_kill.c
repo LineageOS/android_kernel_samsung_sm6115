@@ -582,6 +582,13 @@ void dump_tasks(struct mem_cgroup *memcg, const nodemask_t *nodemask)
 {
 	struct task_struct *p;
 	struct task_struct *task;
+	unsigned long cur_rss_sum;
+	unsigned long heaviest_rss_sum = 0;
+	char heaviest_comm[TASK_COMM_LEN];
+	unsigned long total_rss_sum = 0;
+	pid_t heaviest_pid;
+
+#define K(x) ((x) << (PAGE_SHIFT-10))
 
 	pr_info("Tasks state (memory values in pages):\n");
 	pr_info("[  pid  ]   uid  tgid total_vm      rss pgtables_bytes swapents oom_score_adj name\n");
@@ -606,9 +613,22 @@ void dump_tasks(struct mem_cgroup *memcg, const nodemask_t *nodemask)
 			mm_pgtables_bytes(task->mm),
 			get_mm_counter(task->mm, MM_SWAPENTS),
 			task->signal->oom_score_adj, task->comm);
+		cur_rss_sum = get_mm_rss(task->mm) +
+					get_mm_counter(task->mm, MM_SWAPENTS);
+		total_rss_sum += cur_rss_sum;
+		if (cur_rss_sum > heaviest_rss_sum) {
+			heaviest_rss_sum = cur_rss_sum;
+			strncpy(heaviest_comm, task->comm, TASK_COMM_LEN);
+			heaviest_pid = task->pid;
+		}
 		task_unlock(task);
 	}
 	rcu_read_unlock();
+	if (heaviest_rss_sum)
+		pr_info("heaviest_task_rss:%s(%d) size:%luKB, total:%luKB/%luKB\n",
+			heaviest_comm, heaviest_pid, K(heaviest_rss_sum),
+			K(total_rss_sum), K(totalram_pages));
+#undef K
 }
 
 static void dump_header(struct oom_control *oc, struct task_struct *p)

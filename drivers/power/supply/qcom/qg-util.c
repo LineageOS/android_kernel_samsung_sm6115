@@ -441,6 +441,33 @@ int qg_get_battery_voltage(struct qpnp_qg *chip, int *vbat_uv)
 	return rc;
 }
 
+int get_val(struct range_data *range, int threshold, int *val)
+{
+	int i;
+
+	/*
+	 * If the threshold is lesser than the minimum allowed range,
+	 * return -ENODATA.
+	 */
+	if (threshold < range[0].low_threshold)
+		return -ENODATA;
+
+	/* First try to find the matching index without hysteresis */
+	for (i = 0; i < MAX_VFLOAT_ENTRIES; i++) {
+		if (!range[i].high_threshold && !range[i].low_threshold) {
+			/* First invalid table entry; exit loop */
+			break;
+		}
+
+		if (is_between(range[i].low_threshold,
+			range[i].high_threshold, threshold)) {
+			*val = range[i].value;
+			break;
+		}
+	}
+	return 0;
+}
+
 int qg_get_vbat_avg(struct qpnp_qg *chip, int *vbat_uv)
 {
 	int rc = 0;

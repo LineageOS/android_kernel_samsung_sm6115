@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2010 - 2018 Novatek, Inc.
  *
- * $Revision: 47247 $
- * $Date: 2019-07-10 10:41:36 +0800 (Wed, 10 Jul 2019) $
+ * $Revision: 57674 $
+ * $Date: 2020-03-02 11:16:20 +0800 (週一, 02 三月 2020) $
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,8 +27,10 @@
 #define NVT_BASELINE "nvt_baseline"
 #define NVT_RAW "nvt_raw"
 #define NVT_DIFF "nvt_diff"
+#define NVT_PEN_DIFF "nvt_pen_diff"
+#define NVT_GESTURE "nvt_gesture"
 
-#define BUS_TRANSFER_LENGTH  64
+#define BUS_TRANSFER_LENGTH  256
 
 #define NORMAL_MODE 0x00
 #define TEST_MODE_1 0x21
@@ -38,13 +39,19 @@
 
 #define XDATA_SECTOR_SIZE   256
 
-static uint8_t xdata_tmp[2048] = {0};
-static int32_t xdata[2048] = {0};
+static uint8_t xdata_tmp[5000] = {0};
+static int32_t xdata[2500] = {0};
+static int32_t xdata_pen_tip_x[256] = {0};
+static int32_t xdata_pen_tip_y[256] = {0};
+static int32_t xdata_pen_ring_x[256] = {0};
+static int32_t xdata_pen_ring_y[256] = {0};
 
 static struct proc_dir_entry *NVT_proc_fw_version_entry;
 static struct proc_dir_entry *NVT_proc_baseline_entry;
 static struct proc_dir_entry *NVT_proc_raw_entry;
 static struct proc_dir_entry *NVT_proc_diff_entry;
+static struct proc_dir_entry *NVT_proc_pen_diff_entry;
+static struct proc_dir_entry *NVT_proc_gesture_entry;
 
 /*******************************************************
 Description:
@@ -58,18 +65,88 @@ void nvt_change_mode(uint8_t mode)
 	uint8_t buf[8] = {0};
 
 	//---set xdata index to EVENT BUF ADDR---
-	nvt_set_page(I2C_FW_Address, ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HOST_CMD);
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HOST_CMD);
 
 	//---set mode---
 	buf[0] = EVENT_MAP_HOST_CMD;
 	buf[1] = mode;
-	CTP_I2C_WRITE(ts->client, I2C_FW_Address, buf, 2);
+	CTP_SPI_WRITE(ts->client, buf, 2);
 
 	if (mode == NORMAL_MODE) {
 		buf[0] = EVENT_MAP_HANDSHAKING_or_SUB_CMD_BYTE;
 		buf[1] = HANDSHAKING_HOST_READY;
-		CTP_I2C_WRITE(ts->client, I2C_FW_Address, buf, 2);
+		CTP_SPI_WRITE(ts->client, buf, 2);
 		msleep(20);
+	}
+}
+
+int32_t nvt_set_pen_inband_mode_1(uint8_t freq_idx, uint8_t x_term)
+{
+	uint8_t buf[8] = {0};
+	int32_t i = 0;
+	const int32_t retry = 5;
+
+	//---set xdata index to EVENT BUF ADDR---
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HOST_CMD);
+
+	//---set mode---
+	buf[0] = EVENT_MAP_HOST_CMD;
+	buf[1] = 0xC1;
+	buf[2] = 0x02;
+	buf[3] = freq_idx;
+	buf[4] = x_term;
+	CTP_SPI_WRITE(ts->client, buf, 5);
+
+	for (i = 0; i < retry; i++) {
+		buf[0] = EVENT_MAP_HOST_CMD;
+		buf[1] = 0xFF;
+		CTP_SPI_READ(ts->client, buf, 2);
+
+		if (buf[1] == 0x00)
+			break;
+
+		usleep_range(10000, 10000);
+	}
+
+	if (i >= retry) {
+		NVT_ERR("failed, i=%d, buf[1]=0x%02X\n", i, buf[1]);
+		return -1;
+	} else {
+		return 0;
+	}
+}
+
+int32_t nvt_set_pen_normal_mode(void)
+{
+	uint8_t buf[8] = {0};
+	int32_t i = 0;
+	const int32_t retry = 5;
+
+	//---set xdata index to EVENT BUF ADDR---
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HOST_CMD);
+
+	//---set mode---
+	buf[0] = EVENT_MAP_HOST_CMD;
+	buf[1] = 0xC1;
+	buf[2] = 0x04;
+	CTP_SPI_WRITE(ts->client, buf, 3);
+
+	for (i = 0; i < retry; i++) {
+		buf[0] = EVENT_MAP_HOST_CMD;
+		buf[1] = 0xFF;
+		CTP_SPI_READ(ts->client, buf, 2);
+
+		if (buf[1] == 0x00)
+			break;
+
+		usleep_range(10000, 10000);
+	}
+
+	if (i >= retry) {
+		NVT_ERR("failed, i=%d, buf[1]=0x%02X\n", i, buf[1]);
+		return -1;
+	} else {
+		return 0;
 	}
 }
 
@@ -85,12 +162,12 @@ uint8_t nvt_get_fw_pipe(void)
 	uint8_t buf[8]= {0};
 
 	//---set xdata index to EVENT BUF ADDR---
-	nvt_set_page(I2C_FW_Address, ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HANDSHAKING_or_SUB_CMD_BYTE);
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HANDSHAKING_or_SUB_CMD_BYTE);
 
 	//---read fw status---
 	buf[0] = EVENT_MAP_HANDSHAKING_or_SUB_CMD_BYTE;
 	buf[1] = 0x00;
-	CTP_I2C_READ(ts->client, I2C_FW_Address, buf, 2);
+	CTP_SPI_READ(ts->client, buf, 2);
 
 	//NVT_LOG("FW pipe=%d, buf[1]=0x%02X\n", (buf[1]&0x01), buf[1]);
 
@@ -109,7 +186,7 @@ void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
 	int32_t i = 0;
 	int32_t j = 0;
 	int32_t k = 0;
-	uint8_t buf[BUS_TRANSFER_LENGTH + 1] = {0};
+	uint8_t buf[BUS_TRANSFER_LENGTH + 2] = {0};
 	uint32_t head_addr = 0;
 	int32_t dummy_len = 0;
 	int32_t data_len = 0;
@@ -126,13 +203,13 @@ void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
 	//read xdata : step 1
 	for (i = 0; i < ((dummy_len + data_len) / XDATA_SECTOR_SIZE); i++) {
 		//---change xdata index---
-		nvt_set_page(I2C_FW_Address, head_addr + XDATA_SECTOR_SIZE * i);
+		nvt_set_page(head_addr + XDATA_SECTOR_SIZE * i);
 
 		//---read xdata by BUS_TRANSFER_LENGTH
 		for (j = 0; j < (XDATA_SECTOR_SIZE / BUS_TRANSFER_LENGTH); j++) {
 			//---read data---
 			buf[0] = BUS_TRANSFER_LENGTH * j;
-			CTP_I2C_READ(ts->client, I2C_FW_Address, buf, BUS_TRANSFER_LENGTH + 1);
+			CTP_SPI_READ(ts->client, buf, BUS_TRANSFER_LENGTH + 1);
 
 			//---copy buf to xdata_tmp---
 			for (k = 0; k < BUS_TRANSFER_LENGTH; k++) {
@@ -146,13 +223,13 @@ void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
 	//read xdata : step2
 	if (residual_len != 0) {
 		//---change xdata index---
-		nvt_set_page(I2C_FW_Address, xdata_addr + data_len - residual_len);
+		nvt_set_page(xdata_addr + data_len - residual_len);
 
 		//---read xdata by BUS_TRANSFER_LENGTH
 		for (j = 0; j < (residual_len / BUS_TRANSFER_LENGTH + 1); j++) {
 			//---read data---
 			buf[0] = BUS_TRANSFER_LENGTH * j;
-			CTP_I2C_READ(ts->client, I2C_FW_Address, buf, BUS_TRANSFER_LENGTH + 1);
+			CTP_SPI_READ(ts->client, buf, BUS_TRANSFER_LENGTH + 1);
 
 			//---copy buf to xdata_tmp---
 			for (k = 0; k < BUS_TRANSFER_LENGTH; k++) {
@@ -171,11 +248,11 @@ void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
 #if TOUCH_KEY_NUM > 0
 	//read button xdata : step3
 	//---change xdata index---
-	nvt_set_page(I2C_FW_Address, xdata_btn_addr);
+	nvt_set_page(xdata_btn_addr);
 
 	//---read data---
 	buf[0] = (xdata_btn_addr & 0xFF);
-	CTP_I2C_READ(ts->client, I2C_FW_Address, buf, (TOUCH_KEY_NUM * 2 + 1));
+	CTP_SPI_READ(ts->client, buf, (TOUCH_KEY_NUM * 2 + 1));
 
 	//---2bytes-to-1data---
 	for (i = 0; i < TOUCH_KEY_NUM; i++) {
@@ -184,7 +261,7 @@ void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
 #endif
 
 	//---set xdata index to EVENT BUF ADDR---
-	nvt_set_page(I2C_FW_Address, ts->mmap->EVENT_BUF_ADDR);
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
 }
 
 /*******************************************************
@@ -199,6 +276,81 @@ void nvt_get_mdata(int32_t *buf, uint8_t *m_x_num, uint8_t *m_y_num)
     *m_x_num = ts->x_num;
     *m_y_num = ts->y_num;
     memcpy(buf, xdata, ((ts->x_num * ts->y_num + TOUCH_KEY_NUM) * sizeof(int32_t)));
+}
+
+/*******************************************************
+Description:
+	Novatek touchscreen read and get number of meta data function.
+
+return:
+	n.a.
+*******************************************************/
+void nvt_read_get_num_mdata(uint32_t xdata_addr, int32_t *buffer, uint32_t num)
+{
+	int32_t i = 0;
+	int32_t j = 0;
+	int32_t k = 0;
+	uint8_t buf[BUS_TRANSFER_LENGTH + 2] = {0};
+	uint32_t head_addr = 0;
+	int32_t dummy_len = 0;
+	int32_t data_len = 0;
+	int32_t residual_len = 0;
+
+	//---set xdata sector address & length---
+	head_addr = xdata_addr - (xdata_addr % XDATA_SECTOR_SIZE);
+	dummy_len = xdata_addr - head_addr;
+	data_len = num * 2;
+	residual_len = (head_addr + dummy_len + data_len) % XDATA_SECTOR_SIZE;
+
+	//printk("head_addr=0x%05X, dummy_len=0x%05X, data_len=0x%05X, residual_len=0x%05X\n", head_addr, dummy_len, data_len, residual_len);
+
+	//read xdata : step 1
+	for (i = 0; i < ((dummy_len + data_len) / XDATA_SECTOR_SIZE); i++) {
+		//---change xdata index---
+		nvt_set_page(head_addr + XDATA_SECTOR_SIZE * i);
+
+		//---read xdata by BUS_TRANSFER_LENGTH
+		for (j = 0; j < (XDATA_SECTOR_SIZE / BUS_TRANSFER_LENGTH); j++) {
+			//---read data---
+			buf[0] = BUS_TRANSFER_LENGTH * j;
+			CTP_SPI_READ(ts->client, buf, BUS_TRANSFER_LENGTH + 1);
+
+			//---copy buf to xdata_tmp---
+			for (k = 0; k < BUS_TRANSFER_LENGTH; k++) {
+				xdata_tmp[XDATA_SECTOR_SIZE * i + BUS_TRANSFER_LENGTH * j + k] = buf[k + 1];
+				//printk("0x%02X, 0x%04X\n", buf[k+1], (XDATA_SECTOR_SIZE*i + BUS_TRANSFER_LENGTH*j + k));
+			}
+		}
+		//printk("addr=0x%05X\n", (head_addr+XDATA_SECTOR_SIZE*i));
+	}
+
+	//read xdata : step2
+	if (residual_len != 0) {
+		//---change xdata index---
+		nvt_set_page(xdata_addr + data_len - residual_len);
+
+		//---read xdata by BUS_TRANSFER_LENGTH
+		for (j = 0; j < (residual_len / BUS_TRANSFER_LENGTH + 1); j++) {
+			//---read data---
+			buf[0] = BUS_TRANSFER_LENGTH * j;
+			CTP_SPI_READ(ts->client, buf, BUS_TRANSFER_LENGTH + 1);
+
+			//---copy buf to xdata_tmp---
+			for (k = 0; k < BUS_TRANSFER_LENGTH; k++) {
+				xdata_tmp[(dummy_len + data_len - residual_len) + BUS_TRANSFER_LENGTH * j + k] = buf[k + 1];
+				//printk("0x%02X, 0x%04x\n", buf[k+1], ((dummy_len+data_len-residual_len) + BUS_TRANSFER_LENGTH*j + k));
+			}
+		}
+		//printk("addr=0x%05X\n", (xdata_addr+data_len-residual_len));
+	}
+
+	//---remove dummy data and 2bytes-to-1data---
+	for (i = 0; i < (data_len / 2); i++) {
+		buffer[i] = (int16_t)(xdata_tmp[dummy_len + i * 2] + 256 * xdata_tmp[dummy_len + i * 2 + 1]);
+	}
+
+	//---set xdata index to EVENT BUF ADDR---
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
 }
 
 /*******************************************************
@@ -240,6 +392,43 @@ static int32_t c_show(struct seq_file *m, void *v)
 	}
 	seq_puts(m, "\n");
 #endif
+
+	seq_printf(m, "\n\n");
+	return 0;
+}
+
+/*******************************************************
+Description:
+	Novatek pen 1D diff xdata sequence print show
+	function.
+
+return:
+	Executive outcomes. 0---succeed.
+*******************************************************/
+static int32_t c_pen_1d_diff_show(struct seq_file *m, void *v)
+{
+	int32_t i = 0;
+
+	seq_printf(m, "Tip X:\n");
+	for (i = 0; i < ts->x_num; i++) {
+		seq_printf(m, "%5d, ", xdata_pen_tip_x[i]);
+	}
+	seq_puts(m, "\n");
+	seq_printf(m, "Tip Y:\n");
+	for (i = 0; i < ts->y_num; i++) {
+		seq_printf(m, "%5d, ", xdata_pen_tip_y[i]);
+	}
+	seq_puts(m, "\n");
+	seq_printf(m, "Ring X:\n");
+	for (i = 0; i < ts->x_num; i++) {
+		seq_printf(m, "%5d, ", xdata_pen_ring_x[i]);
+	}
+	seq_puts(m, "\n");
+	seq_printf(m, "Ring Y:\n");
+	for (i = 0; i < ts->y_num; i++) {
+		seq_printf(m, "%5d, ", xdata_pen_ring_y[i]);
+	}
+	seq_puts(m, "\n");
 
 	seq_printf(m, "\n\n");
 	return 0;
@@ -302,6 +491,13 @@ const struct seq_operations nvt_seq_ops = {
 	.show   = c_show
 };
 
+const struct seq_operations nvt_pen_diff_seq_ops = {
+	.start  = c_start,
+	.next   = c_next,
+	.stop   = c_stop,
+	.show   = c_pen_1d_diff_show
+};
+
 /*******************************************************
 Description:
 	Novatek touchscreen /proc/nvt_fw_version open
@@ -310,7 +506,7 @@ Description:
 return:
 	n.a.
 *******************************************************/
-static int32_t nvt_fw_version_open(struct inode *inode, struct file *file)
+int32_t nvt_fw_version_open(struct inode *inode, struct file *file)
 {
 	if (mutex_lock_interruptible(&ts->lock)) {
 		return -ERESTARTSYS;
@@ -331,7 +527,10 @@ static int32_t nvt_fw_version_open(struct inode *inode, struct file *file)
 
 	NVT_LOG("--\n");
 
-	return seq_open(file, &nvt_fw_version_seq_ops);
+	if (file)
+		return seq_open(file, &nvt_fw_version_seq_ops);
+	else
+		return 0;
 }
 
 static const struct file_operations nvt_fw_version_fops = {
@@ -515,6 +714,120 @@ static const struct file_operations nvt_diff_fops = {
 
 /*******************************************************
 Description:
+	Novatek touchscreen /proc/nvt_pen_diff open function.
+
+return:
+	Executive outcomes. 0---succeed. negative---failed.
+*******************************************************/
+static int32_t nvt_pen_diff_open(struct inode *inode, struct file *file)
+{
+	if (mutex_lock_interruptible(&ts->lock)) {
+		return -ERESTARTSYS;
+	}
+
+	NVT_LOG("++\n");
+
+#if NVT_TOUCH_ESD_PROTECT
+	nvt_esd_check_enable(false);
+#endif /* #if NVT_TOUCH_ESD_PROTECT */
+
+	if (nvt_set_pen_inband_mode_1(0xFF, 0x00)) {
+		mutex_unlock(&ts->lock);
+		return -EAGAIN;
+	}
+
+	if (nvt_check_fw_reset_state(RESET_STATE_NORMAL_RUN)) {
+		mutex_unlock(&ts->lock);
+		return -EAGAIN;
+	}
+
+	if (nvt_clear_fw_status()) {
+		mutex_unlock(&ts->lock);
+		return -EAGAIN;
+	}
+
+	nvt_change_mode(TEST_MODE_2);
+
+	if (nvt_check_fw_status()) {
+		mutex_unlock(&ts->lock);
+		return -EAGAIN;
+	}
+
+	if (nvt_get_fw_info()) {
+		mutex_unlock(&ts->lock);
+		return -EAGAIN;
+	}
+
+	nvt_read_get_num_mdata(ts->mmap->PEN_1D_DIFF_TIP_X_ADDR, xdata_pen_tip_x, ts->x_num);
+	nvt_read_get_num_mdata(ts->mmap->PEN_1D_DIFF_TIP_Y_ADDR, xdata_pen_tip_y, ts->y_num);
+	nvt_read_get_num_mdata(ts->mmap->PEN_1D_DIFF_RING_X_ADDR, xdata_pen_ring_x, ts->x_num);
+	nvt_read_get_num_mdata(ts->mmap->PEN_1D_DIFF_RING_Y_ADDR, xdata_pen_ring_y, ts->y_num);
+
+	nvt_change_mode(NORMAL_MODE);
+
+	nvt_set_pen_normal_mode();
+
+	nvt_check_fw_reset_state(RESET_STATE_NORMAL_RUN);
+
+	mutex_unlock(&ts->lock);
+
+	NVT_LOG("--\n");
+
+	return seq_open(file, &nvt_pen_diff_seq_ops);
+}
+
+static const struct file_operations nvt_pen_diff_fops = {
+	.owner = THIS_MODULE,
+	.open = nvt_pen_diff_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
+static int nvt_gesture_show(struct seq_file *sfile, void *v) {
+	if(ts->gesture_enabled)
+		seq_printf(sfile, "Enable Gesture!\n");
+	else
+		seq_printf(sfile, "Disable Gesture!\n");
+
+	return 0;
+}
+
+static ssize_t nvt_gesture_store(struct file *file, const char *buffer, size_t count, loff_t *pos) {
+	char dbg[10] = { 0 };
+	int res = 0;
+	uint8_t state;
+
+	res = copy_from_user(dbg, (uint8_t *) buffer, sizeof(uint8_t));
+	if (res)
+		return -EINVAL;
+
+	res = kstrtou8(dbg, 16, &state);
+	if (res < 0)
+		return res;
+
+	if(state == 0)
+		ts->gesture_enabled = false;
+	else
+		ts->gesture_enabled = true;
+
+	return count;
+}
+static int32_t nvt_gesture_open(struct inode *inode, struct file *file) {
+	return single_open(file, nvt_gesture_show, NULL);
+}
+
+static const struct file_operations nvt_gesture_fops = {
+	.owner = THIS_MODULE,
+	.open = nvt_gesture_open,
+	.read = seq_read,
+	.write = nvt_gesture_store,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
+/*******************************************************
+Description:
 	Novatek touchscreen extra function proc. file node
 	initial function.
 
@@ -555,6 +868,24 @@ int32_t nvt_extra_proc_init(void)
 		NVT_LOG("create proc/%s Succeeded!\n", NVT_DIFF);
 	}
 
+	if (ts->pen_support) {
+		NVT_proc_pen_diff_entry = proc_create(NVT_PEN_DIFF, 0444, NULL,&nvt_pen_diff_fops);
+		if (NVT_proc_pen_diff_entry == NULL) {
+			NVT_ERR("create proc/%s Failed!\n", NVT_PEN_DIFF);
+			return -ENOMEM;
+		} else {
+			NVT_LOG("create proc/%s Succeeded!\n", NVT_PEN_DIFF);
+		}
+	}
+
+	NVT_proc_gesture_entry = proc_create(NVT_GESTURE, 0644, NULL,&nvt_gesture_fops);
+	if (NVT_proc_gesture_entry == NULL) {
+		NVT_ERR("create proc/nvt_gesture Failed!\n");
+		return -ENOMEM;
+	} else {
+		NVT_LOG("create proc/nvt_gesture Succeeded!\n");
+	}
+
 	return 0;
 }
 
@@ -590,6 +921,14 @@ void nvt_extra_proc_deinit(void)
 		remove_proc_entry(NVT_DIFF, NULL);
 		NVT_proc_diff_entry = NULL;
 		NVT_LOG("Removed /proc/%s\n", NVT_DIFF);
+	}
+
+	if (ts->pen_support) {
+		if (NVT_proc_pen_diff_entry != NULL) {
+			remove_proc_entry(NVT_PEN_DIFF, NULL);
+			NVT_proc_pen_diff_entry = NULL;
+			NVT_LOG("Removed /proc/%s\n", NVT_PEN_DIFF);
+		}
 	}
 }
 #endif

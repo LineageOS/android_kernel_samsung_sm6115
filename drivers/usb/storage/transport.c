@@ -904,6 +904,9 @@ Retry_Sense:
 	 * will want to acquire it.
 	 */
 	mutex_unlock(&us->dev_mutex);
+#ifdef CONFIG_USB_STORAGE_DETECT
+	msleep(200);
+#endif
 	result = usb_stor_port_reset(us);
 	mutex_lock(&us->dev_mutex);
 

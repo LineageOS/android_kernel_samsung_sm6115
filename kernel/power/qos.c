@@ -129,6 +129,21 @@ static struct pm_qos_object memory_bandwidth_pm_qos = {
 	.name = "memory_bandwidth",
 };
 
+#if IS_ENABLED(CONFIG_SEC_INPUT_BOOSTER)
+static BLOCKING_NOTIFIER_HEAD(bias_hyst_notifier);
+static struct pm_qos_constraints bias_hyst_constraints = {
+	.list = PLIST_HEAD_INIT(bias_hyst_constraints.list),
+	.target_value = PM_QOS_BIAS_HYST_DEFAULT_VALUE,
+	.default_value = PM_QOS_BIAS_HYST_DEFAULT_VALUE,
+	.no_constraint_value = PM_QOS_BIAS_HYST_DEFAULT_VALUE,
+	.type = PM_QOS_MAX,
+	.notifiers = &bias_hyst_notifier,
+};
+static struct pm_qos_object bias_hyst_pm_qos = {
+	.constraints = &bias_hyst_constraints,
+	.name = "bias_hyst",
+};
+#endif
 
 static struct pm_qos_object *pm_qos_array[] = {
 	&null_pm_qos,
@@ -136,6 +151,9 @@ static struct pm_qos_object *pm_qos_array[] = {
 	&network_lat_pm_qos,
 	&network_throughput_pm_qos,
 	&memory_bandwidth_pm_qos,
+#if IS_ENABLED(CONFIG_SEC_INPUT_BOOSTER)
+	&bias_hyst_pm_qos,
+#endif
 };
 
 static ssize_t pm_qos_power_write(struct file *filp, const char __user *buf,

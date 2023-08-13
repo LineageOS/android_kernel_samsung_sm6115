@@ -32,11 +32,13 @@
 #include <linux/pm_runtime.h>
 #include <trace/events/mmc.h>
 #include <linux/clk/qcom.h>
+#include <linux/sec_class.h>
 
 #include "sdhci-msm.h"
 #include "sdhci-pltfm.h"
 #include "cqhci.h"
 #include "cqhci-crypto-qti.h"
+#include <linux/proc_fs.h>		//bug702115, linaiyu@wt, 20211217, add sdcard slot check node
 
 #define QOS_REMOVE_DELAY_MS	10
 #define CORE_POWER		0x0
@@ -341,6 +343,8 @@ static const u32 tuning_block_128[] = {
 
 /* global to hold each slot instance for debug */
 static struct sdhci_msm_host *sdhci_slot[2];
+
+static int sdhci_irq_gpio = 0;		//bug702115, linaiyu@wt, 20211217, add sdcard slot check node
 
 static int disable_slots;
 static int bus_mode;
@@ -2272,6 +2276,9 @@ struct sdhci_msm_pltfm_data *sdhci_msm_populate_pdata(struct device *dev,
 		goto out;
 
 	pdata->status_gpio = of_get_named_gpio_flags(np, "cd-gpios", 0, &flags);
+
+	sdhci_irq_gpio = pdata->status_gpio;			//bug702115, linaiyu@wt, 20211217, add sdcard slot check node
+
 	if (gpio_is_valid(pdata->status_gpio) && !(flags & OF_GPIO_ACTIVE_LOW))
 		pdata->caps2 |= MMC_CAP2_CD_ACTIVE_HIGH;
 
@@ -5278,6 +5285,49 @@ static int sdhci_msm_setup_ice_clk(struct sdhci_msm_host *msm_host,
 	return ret;
 }
 
+//bug702115, linaiyu@wt, 20211217, add sdcard slot check node, start
+static int sim_card_status_show(struct seq_file *m, void *v)
+{
+	int gpio_value;
+
+	gpio_value = gpio_get_value_cansleep(sdhci_irq_gpio);
+
+	pr_debug("%s: gpio_value is %d\n", __func__, gpio_value);
+
+	seq_printf(m, "%d\n", gpio_value);
+
+	return 0;
+}
+
+static int sim_card_status_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, sim_card_status_show, NULL);
+}
+
+static const struct file_operations sim_card_status_fops = {
+	.open		= sim_card_status_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int sim_card_tray_create_proc(void)
+{
+	struct proc_dir_entry *status_entry;
+
+	status_entry = proc_create("sd_tray_gpio_value", 0, NULL, &sim_card_status_fops);
+	if (!status_entry){
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+static void sim_card_tray_remove_proc(void)
+{
+	remove_proc_entry("sd_tray_gpio_value", NULL);
+}
+//bug702115, linaiyu@wt, 20211217, add sdcard slot check node, end
+
 /*
  * Changes the bus speed mode for eMMC only as per the
  * kernel command line parameter passed in the boot image.
@@ -5317,6 +5367,115 @@ static void sdhci_msm_select_bus_mode(struct sdhci_host *host)
 			mmc_hostname(host->mmc), __func__, bus_mode);
 	}
 }
+
+/* SYSFS about SD Card Detection */
+static struct device *t_flash_detect_dev;
+static ssize_t t_flash_detect_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct sdhci_msm_host *msm_host = dev_get_drvdata(dev);
+
+	if (!mmc_gpio_get_cd(msm_host->mmc)) {
+		pr_debug("SD slot tray Removed.\n");
+		return sprintf(buf, "Notray\n");
+	}
+	if (msm_host->mmc->card) {
+		pr_debug("External sd: card inserted.\n");
+		return sprintf(buf, "Insert\n");
+	}
+	pr_debug("External sd: card removed.\n");
+	return sprintf(buf, "Remove\n");
+}
+
+/* SYSFS for service center support */
+static struct device *sd_info_dev;
+static ssize_t sd_count_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mmc_host *host = dev_get_drvdata(dev);
+	struct mmc_card *card = host->card;
+	struct mmc_card_error_log *err_log;
+	u64 total_cnt = 0;
+	int len = 0;
+	int i = 0;
+
+	if (!card) {
+		len = snprintf(buf, PAGE_SIZE, "no card\n");
+		goto out;
+	}
+
+	err_log = card->err_log;
+
+	for (i = 0; i < 6; i++) {
+		if (total_cnt < MAX_CNT_U64)
+			total_cnt += err_log[i].count;
+	}
+	len = snprintf(buf, PAGE_SIZE, "%lld\n", total_cnt);
+
+out:
+	return len;
+}
+
+static ssize_t sd_cid_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mmc_host *host = dev_get_drvdata(dev);
+	struct mmc_card *card = host->card;
+	int len = 0;
+
+	if (!card) {
+		len = snprintf(buf, PAGE_SIZE, "no card\n");
+		goto out;
+	}
+
+	len = snprintf(buf, PAGE_SIZE,
+			"%08x%08x%08x%08x\n",
+			card->raw_cid[0], card->raw_cid[1],
+			card->raw_cid[2], card->raw_cid[3]);
+out:
+	return len;
+}
+
+static ssize_t sd_health_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mmc_host *host = dev_get_drvdata(dev);
+	struct mmc_card *card = host->card;
+	struct mmc_card_error_log *err_log;
+	u64 total_c_cnt = 0;
+	u64 total_t_cnt = 0;
+	int len = 0;
+	int i = 0;
+
+	if (!card) {
+		//There should be no spaces in 'No Card'(Vold Team).
+		len = snprintf(buf, PAGE_SIZE, "NOCARD\n");
+		goto out;
+	}
+
+	err_log = card->err_log;
+
+	for (i = 0; i < 6; i++) {
+		if (err_log[i].err_type == -EILSEQ && total_c_cnt < MAX_CNT_U64)
+			total_c_cnt += err_log[i].count;
+		if (err_log[i].err_type == -ETIMEDOUT && total_t_cnt < MAX_CNT_U64)
+			total_t_cnt += err_log[i].count;
+	}
+
+	if(err_log[0].ge_cnt > 100 || err_log[0].ecc_cnt > 0 || err_log[0].wp_cnt > 0 ||
+			err_log[0].oor_cnt > 10 || total_t_cnt > 100 || total_c_cnt > 100)
+		len = snprintf(buf, PAGE_SIZE, "BAD\n");
+	else
+		len = snprintf(buf, PAGE_SIZE, "GOOD\n");
+
+out:
+	return len;
+}
+
+static DEVICE_ATTR(status, 0444, t_flash_detect_show, NULL);
+static DEVICE_ATTR(sd_count, S_IRUGO, sd_count_show, NULL);
+static DEVICE_ATTR(data, 0444, sd_cid_show, NULL);
+static DEVICE_ATTR(fc, 0444, sd_health_show, NULL);
 
 static int sdhci_msm_probe(struct platform_device *pdev)
 {
@@ -5612,6 +5771,11 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	 * in GIC.
 	 */
 	mb();
+	//bug702115, linaiyu@wt, 20211217, add sdcard slot check node, start
+	if(!strcmp(mmc_hostname(host->mmc), "mmc1")){
+		sim_card_tray_create_proc();
+	}
+	//bug702115, linaiyu@wt, 20211217, add sdcard slot check node, end
 
 	/*
 	 * Following are the deviations from SDHC spec v3.0 -
@@ -5684,7 +5848,7 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	msm_host->mmc->caps2 |= msm_host->pdata->caps2;
 	msm_host->mmc->caps2 |= MMC_CAP2_BOOTPART_NOACC;
 	msm_host->mmc->caps2 |= MMC_CAP2_HS400_POST_TUNING;
-	msm_host->mmc->caps2 |= MMC_CAP2_CLK_SCALE;
+	//msm_host->mmc->caps2 |= MMC_CAP2_CLK_SCALE; //bug707490,linaiyu@wt,20211208,modify,disable mmc clk scale
 	msm_host->mmc->caps2 |= MMC_CAP2_SANITIZE;
 	msm_host->mmc->caps2 |= MMC_CAP2_MAX_DISCARD_SIZE;
 	msm_host->mmc->caps2 |= MMC_CAP2_SLEEP_AWAKE;
@@ -5720,6 +5884,50 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 					__func__, ret);
 			goto vreg_deinit;
 		}
+	}
+
+#if defined(CONFIG_NO_DETECT_PIN)
+	if (t_flash_detect_dev == NULL && !strcmp(host->hw_name, "4784000.sdhci")) {
+#else
+	if (t_flash_detect_dev == NULL && gpio_is_valid(msm_host->pdata->status_gpio)) {
+#endif
+		t_flash_detect_dev = sec_device_create(NULL, "sdcard");
+		if (IS_ERR(t_flash_detect_dev))
+			pr_err("%s : Failed to create device!\n", __func__);
+
+		if (device_create_file(t_flash_detect_dev,
+					&dev_attr_status) < 0)
+			pr_err("%s : Failed to create device file(%s)!\n",
+					__func__, dev_attr_status.attr.name);
+
+		dev_set_drvdata(t_flash_detect_dev, msm_host);
+	}
+
+#if defined(CONFIG_NO_DETECT_PIN)
+	if (sd_info_dev == NULL && !strcmp(host->hw_name, "4784000.sdhci")) {
+#else
+	if (sd_info_dev == NULL && gpio_is_valid(msm_host->pdata->status_gpio)) {
+#endif
+		sd_info_dev = sec_device_create(NULL, "sdinfo");
+		if (IS_ERR(sd_info_dev))
+			pr_err("%s : Failed to create device!\n", __func__);
+
+		if (device_create_file(sd_info_dev,
+					&dev_attr_sd_count) < 0)
+			pr_err("%s : Failed to create device file(%s)!\n",
+					__func__, dev_attr_sd_count.attr.name);
+
+		if (device_create_file(sd_info_dev,
+					&dev_attr_data) < 0)
+			pr_err("%s : Failed to create device file(%s)!\n",
+					__func__, dev_attr_data.attr.name);
+					
+		if (device_create_file(sd_info_dev,
+					&dev_attr_fc) < 0)
+			pr_err("%s : Failed to create device file(%s)!\n",
+					__func__, dev_attr_fc.attr.name);
+
+		dev_set_drvdata(sd_info_dev, msm_host->mmc);
 	}
 
 	if ((sdhci_readl(host, SDHCI_CAPABILITIES) & SDHCI_CAN_64BIT) &&
@@ -5953,6 +6161,11 @@ static int sdhci_msm_remove(struct platform_device *pdev)
 		sdhci_msm_bus_unregister(msm_host);
 
 	sdhci_pltfm_free(pdev);
+	//bug702115, linaiyu@wt, 20211217, add sdcard slot check node, start
+	if(!strcmp(mmc_hostname(host->mmc), "mmc1")){
+		sim_card_tray_remove_proc();
+	}
+	//bug702115, linaiyu@wt, 20211217, add sdcard slot check node, end
 
 	return 0;
 }

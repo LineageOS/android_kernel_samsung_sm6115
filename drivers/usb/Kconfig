@@ -110,6 +110,9 @@ source "drivers/usb/image/Kconfig"
 
 source "drivers/usb/usbip/Kconfig"
 
+#bug596217, guodandan@wt, 20201026, add usb control node
+source "drivers/usb/notify/Kconfig"
+
 endif
 
 source "drivers/usb/mtu3/Kconfig"

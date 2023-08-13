@@ -38,6 +38,9 @@
 #include "qg-defs.h"
 
 static int qg_debug_mask;
+/*+Bug594012,gudi.wt,20201023,Bringup:[CW2017] Use soc of CW2017.*/
+static int qg_debug_mask = QG_DEBUG_PON | QG_DEBUG_IRQ;
+/*-Bug594012,gudi.wt,20201023,Bringup:[CW2017] Use soc of CW2017.*/
 
 static int qg_esr_mod_count = 30;
 static ssize_t esr_mod_count_show(struct device *dev, struct device_attribute
@@ -2137,6 +2140,12 @@ static int qg_psy_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_BATT_AGE_LEVEL:
 		rc = qg_setprop_batt_age_level(chip, pval->intval);
 		break;
+#if defined(CONFIG_BATTERY_AGE_FORECAST)
+	case POWER_SUPPLY_PROP_BATTERY_CYCLE:
+		chip->batt_cycle = pval->intval;
+		pr_err("BATTERY_CYCLE(%d)\n", chip->batt_cycle);
+		break;
+#endif
 	default:
 		break;
 	}
@@ -2375,6 +2384,7 @@ static bool qg_cl_ok_to_begin(void *data)
 }
 
 #define DEFAULT_RECHARGE_SOC 95
+//+Bug594012,gudi.wt,20201023,Bringup:recharge when bootup at almost full battery.
 static int qg_charge_full_update(struct qpnp_qg *chip)
 {
 	union power_supply_propval prop = {0, };
@@ -2414,18 +2424,19 @@ static int qg_charge_full_update(struct qpnp_qg *chip)
 			qg_dbg(chip, QG_DEBUG_STATUS, "Terminated charging @ msoc=%d\n",
 					chip->msoc);
 		}
-	} else if ((!chip->charge_done || chip->msoc <= recharge_soc)
-				&& chip->charge_full) {
+	} else if (((!chip->charge_done || chip->msoc <= recharge_soc) && chip->charge_full) ||
+			(chip->udata.param[QG_SOC].valid && chip->udata.param[QG_SOC].data <= 97 &&
+				FULL_SOC == chip->msoc && chip->charge_status == POWER_SUPPLY_STATUS_FULL)) {
 
-		bool input_present = is_input_present(chip);
+		bool usb_present = is_usb_present(chip);
 
 		/*
 		 * force a recharge only if SOC <= recharge SOC and
 		 * we have not started charging.
 		 */
-		if ((chip->wa_flags & QG_RECHARGE_SOC_WA) &&
-			input_present && chip->msoc <= recharge_soc &&
-			chip->charge_status != POWER_SUPPLY_STATUS_CHARGING) {
+		if ((chip->wa_flags & QG_RECHARGE_SOC_WA) && usb_present && (chip->msoc <= recharge_soc ||
+			(chip->udata.param[QG_SOC].valid && chip->udata.param[QG_SOC].data <= 97 &&
+			FULL_SOC == chip->msoc)) && chip->charge_status != POWER_SUPPLY_STATUS_CHARGING) {
 			/* Force recharge */
 			prop.intval = 0;
 			rc = power_supply_set_property(chip->batt_psy,
@@ -2445,7 +2456,7 @@ static int qg_charge_full_update(struct qpnp_qg *chip)
 		 * the input is removed, if linearize-soc is set scale
 		 * msoc from 100% for better UX.
 		 */
-		if (chip->msoc < recharge_soc || !input_present) {
+		if (chip->msoc < recharge_soc || !usb_present) {
 			if (chip->dt.linearize_soc) {
 				get_rtc_time(&chip->last_maint_soc_update_time);
 				chip->maint_soc = FULL_SOC;
@@ -2456,14 +2467,15 @@ static int qg_charge_full_update(struct qpnp_qg *chip)
 					chip->msoc, recharge_soc);
 		} else {
 			/* continue with charge_full state */
-			qg_dbg(chip, QG_DEBUG_STATUS, "msoc=%d recharge_soc=%d charge_full=%d input_present=%d\n",
+			qg_dbg(chip, QG_DEBUG_STATUS, "msoc=%d recharge_soc=%d charge_full=%d usb_present=%d\n",
 					chip->msoc, recharge_soc,
-					chip->charge_full, input_present);
+					chip->charge_full, usb_present);
 		}
 	}
 out:
 	return 0;
 }
+//-Bug594012,gudi.wt,20201023,Bringup:recharge when bootup at almost full battery.
 
 static int qg_parallel_status_update(struct qpnp_qg *chip)
 {
@@ -2580,6 +2592,111 @@ static int qg_handle_battery_insertion(struct qpnp_qg *chip)
 	chip->data_ready = true;
 	wake_up_interruptible(&chip->qg_wait_q);
 
+	return 0;
+}
+
+/* HS60 add for ZQL1693-56 Optimize the charging experience at temperature 45~50 by gaochao at 2019/11/14 start */
+#define CUSTOM_BAT_HIGH_TEMP_DOWM_THRESHOLD		450
+#define CUSTOM_BAT_HIGH_TEMP_RESUME_THRESHOLD		440
+#define CUSTOM_BAT_HIGH_TEMP_RECHARGE_THRESHOLD	        4130
+/*HS70 add for HS70-5059 Optimize the charging experience of SDI at temperature 45~50 by wangzikang at 2020/03/31 end*/
+#define CUSTOM_BAT_HIGH_TEMP_RECHARGE_THRESHOLD_SDI		4030
+/*HS70 add for HS70-5059 Optimize the charging experience of SDI at temperature 45~50 by wangzikang at 2020/03/31 end*/
+/* HS60 add for ZQL1693-56 Optimize the charging experience at temperature 45~50 by gaochao at 2019/11/14 end */
+static int qg_battery_aging_update(struct qpnp_qg *chip)
+{
+	int rc, cycle_count = 0, vbat = 0;
+	union power_supply_propval prop = {0, };
+	/* HS60 add for ZQL1693-56 Optimize the charging experience at temperature 45~50 by gaochao at 2019/11/14 start */
+	int battery_temperature = 0;
+	/* HS60 add for ZQL1693-56 Optimize the charging experience at temperature 45~50 by gaochao at 2019/11/14 end */
+	/*HS70 add for HS70-5059 Optimize the charging experience of SDI at temperature 45~50 by wangzikang at 2020/03/31 start*/
+	int custom_recharge_threshold = 4030;
+/*	if ((chip->batt_id_ohm_default == 150000) && (chip->batt_id_ohm > 170000))
+	{
+		custom_recharge_threshold = CUSTOM_BAT_HIGH_TEMP_RECHARGE_THRESHOLD_SDI;
+		pr_debug("SDI Threshold  =  %d.\n", custom_recharge_threshold);
+	}
+	else*/
+	{
+		custom_recharge_threshold = CUSTOM_BAT_HIGH_TEMP_RECHARGE_THRESHOLD;
+		pr_debug("Threshold  =  %d.\n", custom_recharge_threshold);
+	}
+	/*HS70 add for HS70-5059 Optimize the charging experience of SDI at temperature 45~50 by wangzikang at 2020/03/31 end*/
+
+	/* HS60 add for ZQL1693-56 Optimize the charging experience at temperature 45~50 by gaochao at 2019/11/14 start */
+	rc = qg_get_battery_temp(chip, &battery_temperature);
+	if (rc < 0)
+	{
+		pr_err("Failed to get battery temperature, rc=%d\n", rc);
+	}
+	/* HS60 add for ZQL1693-56 Optimize the charging experience at temperature 45~50 by gaochao at 2019/11/14 end */
+
+	/* HS60 add for SR-ZQL1695-01-405 by wangzikang at 2019/09/19 start */
+	/*rc = get_cycle_count(chip->counter, &cycle_count);
+	if (rc < 0) {
+		pr_err("Failed to get cycle count, rc=%d\n", rc);
+		return 0;
+	}
+
+	if (cycle_count % 50)
+		return 0;
+*/
+	cycle_count = chip->batt_cycle;
+	/* HS60 add for SR-ZQL1695-01-405 by wangzikang at 2019/09/19 end */
+
+	rc = get_val(chip->vfloat_data, cycle_count, &vbat);
+	if (rc < 0) {
+		pr_err("Failed to get vfloat, rc=%d\n", rc);
+		return 0;
+	}
+	chip->bp.float_volt_uv = vbat;
+
+	rc = get_val(chip->vbat_rechg_data, cycle_count, &vbat);
+	if (rc < 0) {
+		pr_err("Failed to get vbat-rechg, rc=%d\n", rc);
+		return 0;
+	}
+
+	if (!is_batt_available(chip))
+		return 0;
+
+	prop.intval = chip->bp.float_volt_uv;
+	rc = power_supply_set_property(chip->batt_psy,
+			POWER_SUPPLY_PROP_VOLTAGE_MAX, &prop);
+	if (rc < 0) {
+		pr_err("Failed to set voltage_max property on batt_psy, rc=%d\n",
+			rc);
+		return 0;
+	}
+	/* HS60 add for P191031-07911 by wangzikang at 2019/11/08 start */
+	/* HS60 add for ZQL1693-56 Optimize the charging experience at temperature 45~50 by gaochao at 2019/11/14 start */
+	//prop.intval = vbat / 1000;
+	if (battery_temperature >= CUSTOM_BAT_HIGH_TEMP_DOWM_THRESHOLD)
+	{
+		/*HS70 add for HS70-5059 Optimize the charging experience of SDI at temperature 45~50 by wangzikang at 2020/03/31 start*/
+		prop.intval = custom_recharge_threshold;
+		/*HS70 add for HS70-5059 Optimize the charging experience of SDI at temperature 45~50 by wangzikang at 2020/03/31 end*/
+	}
+	else if (battery_temperature < CUSTOM_BAT_HIGH_TEMP_RESUME_THRESHOLD)
+	{
+		prop.intval = vbat / 1000;
+	}
+	else
+	{
+		/*HS70 add for HS70-5059 Optimize the charging experience of SDI at temperature 45~50 by wangzikang at 2020/03/31 start*/
+        prop.intval = custom_recharge_threshold;
+		/*HS70 add for HS70-5059 Optimize the charging experience of SDI at temperature 45~50 by wangzikang at 2020/03/31 end*/
+		pr_debug("[%s]line=%d, Keep recharge status, recharge_threshold=%d mV",
+			__FUNCTION__, __LINE__, prop.intval);
+	}
+	/* HS60 add for P191031-07911 by wangzikang at 2019/11/08 end */
+	rc = power_supply_set_property(chip->batt_psy,
+			POWER_SUPPLY_PROP_RECHARGE_VBAT, &prop);
+	if (rc < 0) {
+		pr_err("Failed to set recharge voltage property on batt_psy, rc=%d\n",
+			rc);
+	}
 	return 0;
 }
 
@@ -2719,6 +2836,9 @@ static void qg_status_change_work(struct work_struct *work)
 		pr_err("Failed in charge_full_update, rc=%d\n", rc);
 
 	ttf_update(chip->ttf, input_present);
+
+	if (chip->bp.qg_batt_aging_enable)
+		qg_battery_aging_update(chip);
 out:
 	pm_relax(chip->dev);
 }
@@ -2997,6 +3117,73 @@ static int get_batt_id_ohm(struct qpnp_qg *chip, u32 *batt_id_ohm)
 	return 0;
 }
 
+static int read_range_data_from_node(struct device_node *node,
+		const char *prop_str, struct range_data *ranges,
+		u32 max_threshold, u32 max_value)
+{
+	int rc = 0, i, length, per_tuple_length, tuples;
+
+	rc = of_property_count_elems_of_size(node, prop_str, sizeof(u32));
+	if (rc < 0) {
+		pr_err("Count %s failed, rc=%d\n", prop_str, rc);
+		return rc;
+	}
+
+	length = rc;
+	per_tuple_length = sizeof(struct range_data) / sizeof(u32);
+	if (length % per_tuple_length) {
+		pr_err("%s length (%d) should be multiple of %d\n",
+				prop_str, length, per_tuple_length);
+		return -EINVAL;
+	}
+	tuples = length / per_tuple_length;
+
+	if (tuples > MAX_VFLOAT_ENTRIES) {
+		pr_err("too many entries(%d), only %d allowed\n",
+				tuples, MAX_VFLOAT_ENTRIES);
+		return -EINVAL;
+	}
+
+	rc = of_property_read_u32_array(node, prop_str,
+			(u32 *)ranges, length);
+	if (rc) {
+		pr_err("Read %s failed, rc=%d", prop_str, rc);
+		return rc;
+	}
+
+	for (i = 0; i < tuples; i++) {
+		if (ranges[i].low_threshold >
+				ranges[i].high_threshold) {
+			pr_err("%s thresholds should be in ascendant ranges\n",
+						prop_str);
+			rc = -EINVAL;
+			goto clean;
+		}
+
+		if (i != 0) {
+			if (ranges[i - 1].high_threshold >
+					ranges[i].low_threshold) {
+				pr_err("%s thresholds should be in ascendant ranges\n",
+							prop_str);
+				rc = -EINVAL;
+				goto clean;
+			}
+		}
+
+		if (ranges[i].low_threshold > max_threshold)
+			ranges[i].low_threshold = max_threshold;
+		if (ranges[i].high_threshold > max_threshold)
+			ranges[i].high_threshold = max_threshold;
+		if (ranges[i].value > max_value)
+			ranges[i].value = max_value;
+	}
+
+	return rc;
+clean:
+	memset(ranges, 0, tuples * sizeof(struct range_data));
+	return rc;
+}
+
 static int qg_load_battery_profile(struct qpnp_qg *chip)
 {
 	struct device_node *node = chip->dev->of_node;
@@ -3065,6 +3252,11 @@ static int qg_load_battery_profile(struct qpnp_qg *chip)
 		pr_err("Failed to read battery fastcharge current rc:%d\n", rc);
 		chip->bp.fastchg_curr_ma = -EINVAL;
 	}
+	/* Bug 707468,lizhouw02,wt.20211214,add for disable temp test*/
+#ifdef CONFIG_DISABLE_TEMP_PROTECT
+	chip->bp.float_volt_uv = 4100000;
+	chip->bp.fastchg_curr_ma = 1500;
+#endif /* CONFIG_DISABLE_TEMP_PROTECT */
 
 	/*
 	 * Update the max fcc values based on QG subtype including
@@ -3142,6 +3334,33 @@ static int qg_load_battery_profile(struct qpnp_qg *chip)
 			chip->bp.batt_type_str, chip->bp.float_volt_uv,
 			chip->bp.fastchg_curr_ma);
 
+	chip->bp.qg_batt_aging_enable = of_property_read_bool(profile_node,
+						 "qcom,qg-batt-aging-enable");
+
+	if (chip->bp.qg_batt_aging_enable) {
+		rc = read_range_data_from_node(profile_node,
+				"qcom,vfloat-ranges",
+				chip->vfloat_data,
+				MAX_CYCLE_COUNT,
+				chip->bp.float_volt_uv);
+		if (rc < 0) {
+			pr_err("Read qcom,vfloat-ranges failed from battery profile, rc=%d\n",
+					rc);
+			chip->bp.qg_batt_aging_enable = false;
+			return 0;
+		}
+
+		rc = read_range_data_from_node(profile_node,
+				"qcom,vbat-rechg-ranges",
+				chip->vbat_rechg_data,
+				MAX_CYCLE_COUNT,
+				chip->bp.float_volt_uv);
+		if (rc < 0) {
+			pr_err("Read qcom,vbat-rechg-ranges failed from battery profile, rc=%d\n",
+					rc);
+			chip->bp.qg_batt_aging_enable = false;
+		}
+	}
 	return 0;
 }
 
@@ -3201,6 +3420,10 @@ static int qg_determine_pon_soc(struct qpnp_qg *chip)
 		qg_dbg(chip, QG_DEBUG_PON, "No Profile, skipping PON soc\n");
 		return 0;
 	}
+
+	/* Update the vfloat based on cycle_count*/
+	if (chip->bp.qg_batt_aging_enable)
+		qg_battery_aging_update(chip);
 
 	/* read all OCVs */
 	for (i = S7_PON_OCV; i < PON_OCV_MAX; i++) {
@@ -3357,6 +3580,13 @@ done:
 		return rc;
 	}
 
+    //+Bug594012,gudi.wt,20201023,Bringup:recharge when bootup at almost full battery.
+	if(abs(soc - shutdown[SDAM_SOC]) <= 10) {
+		ocv_uv = shutdown[SDAM_OCV_UV];
+		soc = shutdown[SDAM_SOC];
+	qg_dbg(chip, QG_DEBUG_PON, "WT Using SHUTDOWN_SOC @ PON\n");
+	}
+	//-Bug594012,gudi.wt,20201023,Bringup:recharge when bootup at almost full battery.
 	if (chip->qg_mode == QG_V_I_MODE)
 		chip->cc_soc = soc_raw;
 	chip->sys_soc = soc_raw;
@@ -4141,8 +4371,14 @@ static int qg_parse_cl_dt(struct qpnp_qg *chip)
 	return 0;
 }
 
+#ifdef USING_CW2017_BATT
+/*Limit 0% voltage*/
+#define DEFAULT_VBATT_EMPTY_MV		2800
+#define DEFAULT_VBATT_EMPTY_COLD_MV	2800
+#else
 #define DEFAULT_VBATT_EMPTY_MV		3200
 #define DEFAULT_VBATT_EMPTY_COLD_MV	3000
+#endif
 #define DEFAULT_VBATT_CUTOFF_MV		3400
 #define DEFAULT_VBATT_LOW_MV		3500
 #define DEFAULT_VBATT_LOW_COLD_MV	3800

@@ -60,9 +60,14 @@ static struct usb_interface_descriptor intf_desc = {
 	.bLength            =	sizeof(intf_desc),
 	.bDescriptorType    =	USB_DT_INTERFACE,
 	.bNumEndpoints      =	2,
-	.bInterfaceClass    =	USB_CLASS_VENDOR_SPEC,
-	.bInterfaceSubClass =	USB_SUBCLASS_VENDOR_SPEC,
+	.bInterfaceClass    =	0xFF,
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	.bInterfaceSubClass =	0x10,
+	.bInterfaceProtocol =	0x01,
+#else
+	.bInterfaceSubClass =	0xFF,
 	.bInterfaceProtocol =	0x30,
+#endif
 };
 
 static struct usb_endpoint_descriptor hs_bulk_in_desc = {
@@ -855,6 +860,8 @@ static struct diag_context *diag_context_init(const char *name)
 	dev->ch = _ch;
 
 	dev->function.name = _ch->name;
+	dev->function.fs_descriptors = fs_diag_desc;
+	dev->function.hs_descriptors = hs_diag_desc;
 	dev->function.bind = diag_function_bind;
 	dev->function.unbind = diag_function_unbind;
 	dev->function.set_alt = diag_function_set_alt;

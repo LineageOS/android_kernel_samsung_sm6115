@@ -25,6 +25,7 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
+#include <linux/hardware_info.h>//bug702115,linaiyu@wt,2021/11/23,ADD,add hardware board id info
 
 #define PMIC_VER_8941				0x01
 #define PMIC_VERSION_REG			0x0105
@@ -132,7 +133,6 @@
 
 #define QPNP_PON_UVLO_DLOAD_EN			BIT(7)
 #define QPNP_PON_SMPL_EN			BIT(7)
-#define QPNP_PON_KPDPWR_ON			BIT(0)
 
 /* Limits */
 #define QPNP_PON_S1_TIMER_MAX			10256
@@ -226,7 +226,6 @@ struct qpnp_pon {
 	bool			kpdpwr_dbc_enable;
 	bool			resin_pon_reset;
 	ktime_t			kpdpwr_last_release_time;
-	bool			log_kpd_event;
 };
 
 static int pon_ship_mode_en;
@@ -914,10 +913,12 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	struct qpnp_pon_config *cfg = NULL;
 	u8  pon_rt_bit = 0;
 	u32 key_status;
-	uint pon_rt_sts;
+	uint pon_rt_sts, pon_rt_sts_ori;
 	u64 elapsed_us;
 	int rc;
+	u8 first = 1;
 
+again:
 	cfg = qpnp_get_cfg(pon, pon_type);
 	if (!cfg)
 		return -EINVAL;
@@ -935,10 +936,13 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		}
 	}
 
-	/* Check the RT status to get the current status of the line */
-	rc = qpnp_pon_read(pon, QPNP_PON_RT_STS(pon), &pon_rt_sts);
-	if (rc)
-		return rc;
+	if (first) {
+		/* Check the RT status to get the current status of the line */
+		rc = qpnp_pon_read(pon, QPNP_PON_RT_STS(pon), &pon_rt_sts_ori);
+		if (rc)
+			return rc;
+		pon_rt_sts = pon_rt_sts_ori;
+	}
 
 	switch (cfg->pon_type) {
 	case PON_KPDPWR:
@@ -957,8 +961,8 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		return -EINVAL;
 	}
 
-	pr_debug("PMIC input: code=%d, status=0x%02X\n", cfg->key_code,
-		pon_rt_sts);
+	pr_err("PMIC input: code=%d, status=0x%02X, 0x%02X\n", cfg->key_code,
+		pon_rt_sts_ori, pon_rt_sts);
 	key_status = pon_rt_sts & pon_rt_bit;
 
 	if (pon->kpdpwr_dbc_enable && cfg->pon_type == PON_KPDPWR) {
@@ -966,23 +970,35 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 			pon->kpdpwr_last_release_time = ktime_get();
 	}
 
-	/*
-	 * Simulate a press event in case release event occurred without a press
-	 * event
-	 */
-	if (pon->log_kpd_event && (cfg->pon_type == PON_KPDPWR))
-		pr_info_ratelimited("PMIC input: KPDPWR status=0x%02x, KPDPWR_ON=%d\n",
-			pon_rt_sts, (pon_rt_sts & QPNP_PON_KPDPWR_ON));
-
-	if (!cfg->old_state && !key_status) {
-		input_report_key(pon->pon_input, cfg->key_code, 1);
-		input_sync(pon->pon_input);
-	}
+	if (!(cfg->old_state && !!key_status)) {
+		/*
+		 * Simulate a press event in case release event occurred without a press
+		 * event
+		 */
+		if (!cfg->old_state && !key_status) {
+			input_report_key(pon->pon_input, cfg->key_code, 1);
+			input_sync(pon->pon_input);
+		}
 
 	input_report_key(pon->pon_input, cfg->key_code, key_status);
 	input_sync(pon->pon_input);
+		pr_info("%s %s: %d, 0x%x, 0x%x, %d\n", SECLOG, __func__, cfg->key_code, pon_rt_sts_ori, pon_rt_sts, !!key_status);
+	} else
+		pr_debug("%s %s: %d, 0x%x, 0x%x, %d (skip)\n", SECLOG, __func__, cfg->key_code, pon_rt_sts_ori, pon_rt_sts, !!key_status);
 
 	cfg->old_state = !!key_status;
+	
+	if (first) {
+		first = 0;
+		pon_rt_sts &= ~pon_rt_bit;
+		if (pon_rt_sts & QPNP_PON_RESIN_N_SET) {
+			pon_type = PON_RESIN;
+			goto again;
+		} else if (pon_rt_sts & QPNP_PON_KPDPWR_N_SET) {
+			pon_type = PON_KPDPWR;
+			goto again;
+		}
+	}
 
 	return 0;
 }
@@ -1240,6 +1256,11 @@ static int qpnp_config_reset(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
 	if (rc)
 		return rc;
 
+	/* Configure reset type:
+	 * always do warm reset regardless of debug level
+	 */
+	cfg->s2_type = PON_POWER_OFF_WARM_RESET;
+
 	rc = qpnp_pon_masked_write(pon, cfg->s2_cntl_addr,
 				QPNP_PON_S2_CNTL_TYPE_MASK, (u8)cfg->s2_type);
 	if (rc)
@@ -1362,7 +1383,6 @@ static int qpnp_pon_config_kpdpwr_init(struct qpnp_pon *pon,
 				       struct device_node *node)
 {
 	int rc;
-	uint pon_rt_sts;
 
 	cfg->state_irq = platform_get_irq_byname(pdev, "kpdpwr");
 	if (cfg->state_irq < 0) {
@@ -1399,16 +1419,6 @@ static int qpnp_pon_config_kpdpwr_init(struct qpnp_pon *pon,
 	} else {
 		cfg->s2_cntl_addr = QPNP_PON_KPDPWR_S2_CNTL(pon);
 		cfg->s2_cntl2_addr = QPNP_PON_KPDPWR_S2_CNTL2(pon);
-	}
-
-	if (pon->log_kpd_event) {
-		/* Read PON_RT_STS status during driver initialization. */
-		rc = qpnp_pon_read(pon, QPNP_PON_RT_STS(pon), &pon_rt_sts);
-		if (rc < 0)
-			pr_err("failed to read QPNP_PON_RT_STS rc=%d\n", rc);
-
-		pr_info("KPDPWR status at init=0x%02x, KPDPWR_ON=%d\n",
-			pon_rt_sts, (pon_rt_sts & QPNP_PON_KPDPWR_ON));
 	}
 
 	return 0;
@@ -2265,6 +2275,52 @@ static int qpnp_pon_parse_dt_power_off_config(struct qpnp_pon *pon)
 	return 0;
 }
 
+//+++bug702115,linaiyu@wt,2021/11/23,ADD,add hardware board id info
+extern char board_id[HARDWARE_MAX_ITEM_LONGTH];
+void probe_board_and_set(void)
+{
+	char* boardid_start;
+	char boardid_info[HARDWARE_MAX_ITEM_LONGTH];
+
+	boardid_start = strstr(saved_command_line,"board_id=");
+	memset(boardid_info, 0, HARDWARE_MAX_ITEM_LONGTH);
+	if(boardid_start != NULL)
+	{
+        strncpy(boardid_info, boardid_start+sizeof("board_id=")-1, 9);//skip the header "board_id="
+	}
+	else
+	{
+		sprintf(boardid_info, "boarid not define!");
+	}
+	strlcpy(board_id, boardid_info, HARDWARE_MAX_ITEM_LONGTH);
+}
+
+extern char hardware_id[HARDWARE_MAX_ITEM_LONGTH];
+void probe_hardware_and_set(void)
+{
+	char* hw_id_start;
+	char hw_id_info[HARDWARE_MAX_ITEM_LONGTH];
+	int len = 0;
+
+	hw_id_start = strstr(saved_command_line,"hwversion=");
+	memset(hw_id_info, 0, HARDWARE_MAX_ITEM_LONGTH);
+	if(hw_id_start != NULL)
+	{
+        hw_id_start += strlen("hwversion=");
+        len = strstr(hw_id_start," ") - hw_id_start;
+        if(len < 7)
+            strncpy(hw_id_info, hw_id_start, len);//skip the header "hwversion="
+        else
+			sprintf(hw_id_info, "hardware id len too long!");
+	}
+	else
+	{
+		sprintf(hw_id_info, "hardware id not define!");
+	}
+	strlcpy(hardware_id, hw_id_info, HARDWARE_MAX_ITEM_LONGTH);
+}
+//---bug702115,linaiyu@wt,2021/11/23,ADD,add hardware board id info
+
 static int qpnp_pon_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -2377,9 +2433,6 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 		pon->is_spon = true;
 	}
 
-	pon->log_kpd_event = of_property_read_bool(dev->of_node,
-				"qcom,log-kpd-event");
-
 	/* Register the PON configurations */
 	rc = qpnp_pon_config_init(pon, pdev);
 	if (rc)
@@ -2398,6 +2451,11 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 		modem_reset_dev = pon;
 
 	qpnp_pon_debugfs_init(pon);
+
+	//+++bug702115,linaiyu@wt,2021/11/23,ADD,add hardware board id info
+	probe_board_and_set();
+	probe_hardware_and_set();
+	//---bug702115,linaiyu@wt,2021/11/23,ADD,add hardware board id info
 
 	return 0;
 }

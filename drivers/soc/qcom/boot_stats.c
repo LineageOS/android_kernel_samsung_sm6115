@@ -98,8 +98,6 @@ int boot_stats_init(void)
 	print_boot_stats();
 
 	iounmap(boot_stats);
-	iounmap(mpm_counter_base);
-
 	return 0;
 }
 
