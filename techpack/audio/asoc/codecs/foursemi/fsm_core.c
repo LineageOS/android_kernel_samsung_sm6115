@@ -2565,7 +2565,7 @@ void fsm_speaker_off(void)
 	fsm_mutex_unlock();
 }
 //+bug 537023, baoshulin@wingtech.com, 20200316,  update fs18xx add switch channle 
-int fsm_flip_angle()
+int fsm_flip_angle(void)
 {
 	fsm_config_t *cfg = fsm_get_config();
 	if(cfg->next_angle >= 270) return 3;
