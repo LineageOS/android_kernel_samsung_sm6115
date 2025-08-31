@@ -199,6 +199,7 @@ static bool get_dload_mode(void)
 	return dload_mode_enabled;
 }
 
+#if 0
 static void enable_emergency_dload_mode(void)
 {
 #ifndef WT_FINAL_RELEASE
@@ -229,6 +230,7 @@ static void enable_emergency_dload_mode(void)
 	pr_err("Failed to set secure EDLOAD mode \n");
 #endif
 }
+#endif
 
 static int dload_set(const char *val, const struct kernel_param *kp)
 {

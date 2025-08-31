@@ -104,7 +104,7 @@ ssize_t alta_bigdata_read(struct file *filep, char __user *buf, size_t size, lof
     if(!proc_buf)
         return -ENOMEM;
 
-	spin_lock(&alta_lock);
+    spin_lock(&alta_lock);
     set_print_buf(proc_buf,&proc_offset,ALTA_BUF_SIZE);
 
     /* Print DMV info */

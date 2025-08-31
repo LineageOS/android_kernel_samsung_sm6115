@@ -2027,13 +2027,13 @@ done:
 	release_sock(sk);
 	return err;
 }
-
+#if 0
 static void hci_sock_destruct(struct sock *sk)
 {
 	skb_queue_purge(&sk->sk_receive_queue);
 	skb_queue_purge(&sk->sk_write_queue);
 }
-
+#endif
 static const struct proto_ops hci_sock_ops = {
 	.family		= PF_BLUETOOTH,
 	.owner		= THIS_MODULE,
