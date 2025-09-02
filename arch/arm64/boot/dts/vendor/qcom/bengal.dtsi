@@ -527,6 +527,7 @@
 			clocks = <0x10 0x08>;
 			clock-names = "core_clk";
 			qcom,coresight-jtagmm-cpu = <0x07>;
+			status = "disabled";
 			phandle = <0x1d0>;
 		};
 
@@ -537,6 +538,7 @@
 			clocks = <0x10 0x08>;
 			clock-names = "core_clk";
 			qcom,coresight-jtagmm-cpu = <0x08>;
+			status = "disabled";
 			phandle = <0x1d1>;
 		};
 
@@ -547,6 +549,7 @@
 			clocks = <0x10 0x08>;
 			clock-names = "core_clk";
 			qcom,coresight-jtagmm-cpu = <0x09>;
+			status = "disabled";
 			phandle = <0x1d2>;
 		};
 
@@ -557,6 +560,7 @@
 			clocks = <0x10 0x08>;
 			clock-names = "core_clk";
 			qcom,coresight-jtagmm-cpu = <0x0a>;
+			status = "disabled";
 			phandle = <0x1d3>;
 		};
 
@@ -567,6 +571,7 @@
 			clocks = <0x10 0x08>;
 			clock-names = "core_clk";
 			qcom,coresight-jtagmm-cpu = <0x0b>;
+			status = "disabled";
 			phandle = <0x1d4>;
 		};
 
@@ -577,6 +582,7 @@
 			clocks = <0x10 0x08>;
 			clock-names = "core_clk";
 			qcom,coresight-jtagmm-cpu = <0x0c>;
+			status = "disabled";
 			phandle = <0x1d5>;
 		};
 
@@ -587,6 +593,7 @@
 			clocks = <0x10 0x08>;
 			clock-names = "core_clk";
 			qcom,coresight-jtagmm-cpu = <0x0d>;
+			status = "disabled";
 			phandle = <0x1d6>;
 		};
 
@@ -597,6 +604,7 @@
 			clocks = <0x10 0x08>;
 			clock-names = "core_clk";
 			qcom,coresight-jtagmm-cpu = <0x0e>;
+			status = "disabled";
 			phandle = <0x1d7>;
 		};
 
