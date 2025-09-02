@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "4b689432_9ce4493c",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4550
+      },
+      "writtenOn": "2025-09-02T18:43:08Z",
+      "side": 1,
+      "message": "CONFIG_SPECULATIVE_PAGE_FAULT has been removed upstream, you resolved the conflicts incorrectly",
+      "revId": "d6076f698d2a3f8d70cccfb269d0a149d108cb5c",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
