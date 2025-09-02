@@ -1,0 +1,55 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "609ce64c_0534c568",
+        "filename": "arch/arm64/configs/vendor/gta4l-common.config",
+        "patchSetId": 1
+      },
+      "lineNbr": 2,
+      "author": {
+        "id": 16185
+      },
+      "writtenOn": "2025-09-02T18:51:34Z",
+      "side": 1,
+      "message": "in common config if you merged latest?",
+      "revId": "a8bd8e171b77206516eee6efb00681a54e0a6bee",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "e8aab5ba_dca3ef34",
+        "filename": "arch/arm64/configs/vendor/gta4l-common.config",
+        "patchSetId": 1
+      },
+      "lineNbr": 52,
+      "author": {
+        "id": 16185
+      },
+      "writtenOn": "2025-09-02T18:51:34Z",
+      "side": 1,
+      "message": "needed?",
+      "revId": "a8bd8e171b77206516eee6efb00681a54e0a6bee",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "9f633db6_c80ff51b",
+        "filename": "arch/arm64/configs/vendor/gta4l-common.config",
+        "patchSetId": 1
+      },
+      "lineNbr": 55,
+      "author": {
+        "id": 16185
+      },
+      "writtenOn": "2025-09-02T18:51:34Z",
+      "side": 1,
+      "message": "needed? Lineage has NTFS in vold...",
+      "revId": "a8bd8e171b77206516eee6efb00681a54e0a6bee",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
