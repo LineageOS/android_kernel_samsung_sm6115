@@ -18,6 +18,24 @@
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "7506ef3b_f969efad",
+        "filename": "arch/arm64/configs/vendor/gta4l-common.config",
+        "patchSetId": 1
+      },
+      "lineNbr": 2,
+      "author": {
+        "id": 3917
+      },
+      "writtenOn": "2025-09-06T05:46:10Z",
+      "side": 1,
+      "message": "Don\u0027t think this is there",
+      "parentUuid": "609ce64c_0534c568",
+      "revId": "a8bd8e171b77206516eee6efb00681a54e0a6bee",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "e8aab5ba_dca3ef34",
@@ -35,6 +53,24 @@
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "06e257c3_2d0bbb8a",
+        "filename": "arch/arm64/configs/vendor/gta4l-common.config",
+        "patchSetId": 1
+      },
+      "lineNbr": 52,
+      "author": {
+        "id": 3917
+      },
+      "writtenOn": "2025-09-06T05:46:10Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "e8aab5ba_dca3ef34",
+      "revId": "a8bd8e171b77206516eee6efb00681a54e0a6bee",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "9f633db6_c80ff51b",
@@ -48,6 +84,24 @@
       "writtenOn": "2025-09-02T18:51:34Z",
       "side": 1,
       "message": "needed? Lineage has NTFS in vold...",
+      "revId": "a8bd8e171b77206516eee6efb00681a54e0a6bee",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "c3d3e99e_932ea4f6",
+        "filename": "arch/arm64/configs/vendor/gta4l-common.config",
+        "patchSetId": 1
+      },
+      "lineNbr": 55,
+      "author": {
+        "id": 3917
+      },
+      "writtenOn": "2025-09-06T05:46:10Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "9f633db6_c80ff51b",
       "revId": "a8bd8e171b77206516eee6efb00681a54e0a6bee",
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     }
