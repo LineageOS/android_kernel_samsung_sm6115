@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "61010392_7a8908a6",
+        "filename": "arch/arm64/configs/vendor/bengal-perf_defconfig",
+        "patchSetId": 1
+      },
+      "lineNbr": 95,
+      "author": {
+        "id": 19979
+      },
+      "writtenOn": "2026-05-11T20:55:38Z",
+      "side": 1,
+      "message": "typo",
+      "revId": "ca0db8f4b45b42195e2d09e8c631f359ff950b46",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
