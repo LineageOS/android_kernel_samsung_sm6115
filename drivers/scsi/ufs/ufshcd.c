@@ -8092,6 +8092,7 @@ cleanup:
 
 out:
 	if (!err) {
+		lrbp->cmd = NULL;
 		err = SUCCESS;
 	} else {
 		dev_err(hba->dev, "%s: failed with err %d\n", __func__, err);
